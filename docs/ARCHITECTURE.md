@@ -1,9 +1,14 @@
 # ARCHITECTURE — Proof of Knowledge Engine (P.O.K.E.)
 
-A community-owned, federated, gamified education node. Two front-ends over one world, a local
-LLM swarm that generates curriculum grounded in a Wikipedia-scale corpus, a human-in-the-loop
-guardrail against hallucination, and a Bitcoin layer for discovery and (regtest-first) rewards.
-Fully open-source, self-hostable, offline-capable. No proprietary APIs.
+A community-owned, federated, gamified education node. A local LLM swarm generates curriculum
+grounded in a Wikipedia-scale corpus, a human-in-the-loop guardrail guards against hallucination,
+and a Bitcoin layer handles discovery and (regtest-first) rewards. Fully open-source,
+self-hostable, offline-capable. No proprietary APIs.
+
+**POKE is an engine; games are extensions.** The services below are the engine (one shared brain);
+the MUD and the Luanti voxel world are two *extensions* that render it — and any game can be the
+next one. The MUD and Luanti already drive the same `state-sync` against the same DB-2, so they are
+literally one world in two windows. How to plug a game in: **`EXTENSIONS.md`**.
 
 See `CONVENTIONS.md` for the canonical service/port/tier table — this doc explains the *why*.
 

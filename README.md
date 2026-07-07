@@ -2,28 +2,54 @@
 
 # 🕹️ Pac's Arcade — The Proof of Knowledge Engine (P.O.K.E.)
 
-> A community-owned, federated, gamified education node. Learn real things by playing —
-> in a text MUD **or** a 3D voxel world — tutored by a local AI that can't make things up,
-> and rewarded (carefully) in real Bitcoin. Fully open-source. Self-hosted. Runs offline.
-> No Discord. No proprietary APIs. Ever. 💜
+> ### One mind. Every world.
+> P.O.K.E. is a local-first, self-hosted **education engine** — a tutor that can't make things up, a
+> living curriculum drawn from a library as deep as Wikipedia, and an on-chain **proof of what you've
+> learned** — that *any game can plug into*. Learn real things by **playing**. Own what you earn.
+> Fully open-source. Runs offline. No Discord. No proprietary APIs. Ever. 💜
 
-Every operator (a *fren*) runs their **own** Verse on their **own** hardware, and the Verses
-**federate** — so knowledge, community, and rewards flow across a mesh nobody owns and nobody
-can shut off.
+## The engine — and the worlds that plug into it
 
----
+**POKE is the engine. Games are extensions.** The engine carries the hard parts: a Socratic AI swarm,
+a hallucination-guarded curriculum, a shared knowledge mesh, portable identity, and soulbound **rune**
+rewards. A world just brings the *place*.
 
-## What's inside a Verse
+- 🕹️ **POKEMUD** — the reference extension: a retro terminal world, playable right now.
+- 🧊 **The Voxel Verse** — the *same knowledge*, rendered in 3D on Luanti (Minetest).
+- 🤠 **…your world next** — a RedM server, a roguelike, your own game. Speak the POKE protocol and
+  your world inherits AI tutors, quests, shared knowledge, identity, and rewards — for free.
 
-| Pillar | What it is | Tech |
-|--------|-----------|------|
-| 🛰️ **Comms** | Chat, community, cross-Verse federation, operator alerts | **Matrix** (Dendrite) |
-| 🎮 **Dual interface** | One world, two front-ends: a text MUD **and** a 3D voxel world | MUD + **Luanti** (Minetest) |
-| 🧠 **AI + guardrail** | A local LLM swarm that generates curriculum, grounded in a Wikipedia-scale corpus, with a human-in-the-loop check against hallucination | **Ollama/vLLM** + **pgvector** |
-| ⛓️ **Bitcoin** | Decentralized Verse discovery, seed-phrase learning rewards, tipping | **Bitcoin** (regtest first) |
+> **Same knowledge, many worlds. Bring a world — tap the group knowledge, or bring your own.**
 
-Read the design in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The contract every service
-agrees on (names, ports, tiers) is [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md).
+How a game plugs in: **[`docs/EXTENSIONS.md`](docs/EXTENSIONS.md)** · the design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## What the engine actually does (worth reading twice)
+
+Point *any* world at POKE and every player gets:
+
+- **A tutor that won't lie.** A local LLM Oracle teaches Socratically; every fact it generates is
+  checked against a real corpus, and anything it can't ground is quarantined for a human. The AI
+  *makes the world* — it doesn't *make things up*.
+- **A curriculum that adapts.** The engine remembers each player — what they know, where they stick —
+  and grows rooms, quests, and bosses aimed at their gaps.
+- **Proof you can hold.** Master a subject and the engine **etches a soulbound rune** to your wallet:
+  your name, the moment you earned it, on Bitcoin, non-transferable, *yours*. A lost device never
+  loses your record.
+- **Knowledge that travels.** Nodes subscribe to each other's *verses* like nostr relays and sync a
+  shared library over BitTorrent. Carry the common knowledge, or seed your own.
+- **An identity that's yours.** Link your `@fren` / nostr / spaces name once — it follows you into
+  every world on the network.
+
+And it stays **fast**, because the mesh is never on a path a player waits on (below).
+
+## Meet the Oracle — in its own words
+
+> *"I'm the attendant at Pac's Arcade. I don't hand out answers — I trade in questions. Show me you
+> truly understand a thing, and I'll etch it into a rune only you can carry. I run on your machine, I
+> learn what you're chasing, and I'll find you in whatever world you walk into. Insert a token, fren.
+> The high score is understanding."*
+
+The build contract every service agrees on is [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md).
 
 ## Why it feels instant even though it's a mesh
 
@@ -43,18 +69,25 @@ Full rationale (and the answer to *"won't the mesh be laggy?"*): [`docs/LATENCY.
 ## Repository layout
 
 ```
-knowledge-engine/
-├── README.md                  ← you are here (server-admin build guide)
-├── docs/                      ARCHITECTURE · LATENCY · SECURITY · CONVENTIONS · ONBOARDING-WIZARD · RUNES · CORPUS-MESH
-├── .claude/
-│   ├── agents/                8 build sub-agents (one per subsystem) for Claude Code
-│   └── skills/                node-wizard · issue-node-cert · class-rune · corpus-ingest ·
-│                              hallucination-guardrail · seed-loot-forge · pacbot (educator)
-├── infra/                     compose.yaml (Podman) + quadlet units · postgres schemas · dendrite · inference · bitcoin · luanti
-├── services/                  orchestrator (swarm) · state-sync · guardrail · corpus · mud · matrix-bridge · bitcoin-bridge
-├── luanti/mods/pacsarcade/    the Voxel Verse mod
-├── connectors/                supplemental knowledge sources feeding DB-1
-└── scripts/                   node-doctor.sh · bootstrap.sh · issue-cert.sh
+knowledge-engine/                the POKE engine + its reference extensions
+│
+├── services/                  ══ THE ENGINE ══  (shared by every world)
+│   ├── orchestrator/            the AI swarm — Oracle · Architect · Custodian · Archivist · Warden
+│   ├── guardrail/               hallucination check vs the corpus (the "won't lie" seam)
+│   ├── corpus/                  the knowledge mesh — subscribe to verses, sync over BitTorrent
+│   ├── bitcoin-bridge/          soulbound rune rewards + on-chain discovery
+│   ├── state-sync/              world-state translation  ← the EXTENSION seam
+│   ├── matrix-bridge/           community / cross-verse federation
+│   └── common/                  world_store — identity · memory · attributes (one brain, many worlds)
+│
+├── services/mud/              ══ EXTENSION ══  POKEMUD — the terminal world (+ web operator console)
+├── luanti/mods/pacsarcade/    ══ EXTENSION ══  the Voxel Verse (Luanti/Minetest)
+│                                (your world goes here next — see docs/EXTENSIONS.md)
+│
+├── connectors/                bring-your-own knowledge sources feeding the corpus
+├── docs/                      ARCHITECTURE · EXTENSIONS · LATENCY · SECURITY · CONVENTIONS · RUNES · CORPUS-MESH · ROADMAP
+├── .claude/                   the AI build crew — agents (one per subsystem) + skills (node-wizard, pacbot, …)
+└── infra/ · scripts/          rootless Podman stack (compose + Quadlet) · node-doctor · bootstrap
 ```
 
 ---
