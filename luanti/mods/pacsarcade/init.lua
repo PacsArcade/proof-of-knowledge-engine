@@ -1,6 +1,6 @@
 -- init.lua — Pac's Arcade Luanti mod (SCAFFOLDING / STUB) 💜
 --
--- The voxel-verse front-end into the Federated Knowledge Engine. This mod does NOT own world
+-- The voxel-verse front-end into Proof of Knowledge Engine (P.O.K.E.). This mod does NOT own world
 -- state: it POSTs world actions to the node-local `state-sync` service (HOT, :8082), which
 -- translates them into DB-2 writes so the Luanti world and the MUD stay in lock-step. It also
 -- forwards in-game chat to `matrix-bridge` (COLD, :8084), off the hot path.
@@ -109,4 +109,4 @@ minetest.register_on_chat_message(function(name, message)
     return false   -- IMPORTANT: don't swallow the message; normal chat still shows in-world.
 end)
 
-minetest.log("action", "["..MODNAME.."] loaded — voxel front-end of the Federated Knowledge Engine 💜")
+minetest.log("action", "["..MODNAME.."] loaded — voxel front-end of P.O.K.E. 💜")

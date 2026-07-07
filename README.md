@@ -1,6 +1,6 @@
-<!-- Pac's Arcade — The Federated Knowledge Engine -->
+<!-- Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.) -->
 
-# 🕹️ Pac's Arcade — The Federated Knowledge Engine
+# 🕹️ Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.)
 
 > A community-owned, federated, gamified education node. Learn real things by playing —
 > in a text MUD **or** a 3D voxel world — tutored by a local AI that can't make things up,
@@ -99,14 +99,14 @@ python services/mud/play.py       # in another terminal — or use: telnet 127.0
 ```
 
 Name yourself, `look`, head `north` to the Oracle's Alcove, `talk oracle`, and `answer` its
-question. Demonstrate you understand self-custody and it mints you a **soulbound class rune** —
+question. Demonstrate you understand self-custody and it etches you a **soulbound class rune** —
 block time and original wallet on the card, exactly like the real thing (regtest mock in dev).
 Then go `east` to the Puzzle Vault and `pull lever`. The Oracle talks to your local LLM if one is
 running (`PA_INFERENCE_BASE_URL` + `PA_GEN_MODEL`); otherwise it falls back to a scripted pacbot.
 
 Your progress **persists**: room, inventory, and earned runes are written to a local SQLite file
 (`data/gamestate.dev.sqlite`), so reconnecting with the same name resumes right where you left off —
-and the Oracle won't mint a rune you already hold. It's the exact same store contract the
+and the Oracle won't etch a rune you already hold. It's the exact same store contract the
 production node uses against Postgres DB-2 (`services/common/world_store.py`).
 
 ---
@@ -253,12 +253,12 @@ Verses add you to the realm directory. Details:
 [`docs/ONBOARDING-WIZARD.md`](docs/ONBOARDING-WIZARD.md) · [`.claude/skills/issue-node-cert`](.claude/skills/issue-node-cert/SKILL.md).
 
 > That cert is for **operators**. Your **students** earn a different credential: a **soulbound
-> class rune** minted to their own wallet when they complete a class (one rune per class, fees paid
-> by the non-profit treasury). It's non-transferable by convention, and the mint transaction records
+> class rune** etched to their own wallet when they complete a class (one rune per class, fees paid
+> by the non-profit treasury). It's non-transferable by convention, and the issuing transaction records
 > the **block time earned** and the **original wallet** — so a lost or compromised wallet never means
 > losing your education: provenance proves who earned it, and the node can re-issue. See
 > [`docs/RUNES.md`](docs/RUNES.md) · [`.claude/skills/class-rune`](.claude/skills/class-rune/SKILL.md).
-> (You can see the whole loop today in the MUD dev mode — it mints a mock one.)
+> (You can see the whole loop today in the MUD dev mode — it etches a mock one.)
 
 ---
 
@@ -284,7 +284,7 @@ The seed-phrase-as-loot reward handles **real money**, so it ships locked down:
   *and* a passing `security-auditor` review. **Class runes obey the same gate** (regtest + `ord`).
 - Seed-loot is **off** by default (`PA_SEED_LOOT_ENABLED=false`).
 - The full 24-word seed is **never** stored in one place (Shamir's Secret Sharing).
-- Anything that mints value must pass the guardrail first (fail closed on money paths).
+- Anything that awards value must pass the guardrail first (fail closed on money paths).
 
 **Do not skip [`docs/SECURITY.md`](docs/SECURITY.md).** There's also a flagged legal question about
 distributing Bitcoin rewards from a non-profit — for Pac + counsel, not for code.

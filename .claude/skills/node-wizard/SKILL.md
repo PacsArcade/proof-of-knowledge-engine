@@ -59,7 +59,7 @@ inference, guardrail, Matrix). Have them connect to the MUD and talk to the Orac
 
 ### 7. Issue the certificate 🎓
 When the node is healthy AND the operator has answered the expertise quiz, invoke the
-**issue-node-cert** skill to mint their **Certified Education Node** credential (signed by the
+**issue-node-cert** skill to issue their **Certified Education Node** credential (signed by the
 node's own key, optionally published as a nostr badge and/or an OP_RETURN discovery announce).
 Congratulate them — they're now a Verse operator on the federated map.
 

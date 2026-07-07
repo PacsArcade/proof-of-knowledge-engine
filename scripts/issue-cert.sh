@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# issue-cert.sh — mint a self-signed "Certified Education Node" credential.
+# issue-cert.sh — issue a self-signed "Certified Education Node" credential.
 # The node signs its own credential with its own key. No central authority.
 # The keypair doubles as the node's discovery identity (PA_NODE_PUBKEY).
 #
@@ -25,7 +25,7 @@ PRIV="$KEYS/node.ed25519.key"; PUB="$KEYS/node.ed25519.pub"
 
 # --- 1. Ensure identity ------------------------------------------------------
 if [[ ! -f "$PRIV" ]]; then
-  echo "▓ Minting node identity (ed25519)…"
+  echo "▓ Issuing node identity (ed25519)…"
   openssl genpkey -algorithm ed25519 -out "$PRIV" >/dev/null 2>&1
   openssl pkey -in "$PRIV" -pubout -out "$PUB" >/dev/null 2>&1
   PUBHEX="$(openssl pkey -in "$PRIV" -pubout -outform DER 2>/dev/null | tail -c 32 | xxd -p -c 64)"

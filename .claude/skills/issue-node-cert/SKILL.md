@@ -1,6 +1,6 @@
 ---
 name: issue-node-cert
-description: Mint a "Certified Education Node" credential for a server operator who has stood up a healthy Verse and passed the operator quiz. Use at the end of node-wizard onboarding, or when an operator asks to (re)issue their node certificate or publish their Verse to the federated map. Signs the credential with the node's own key and optionally publishes it as a nostr badge and/or an OP_RETURN discovery announce.
+description: Issue a "Certified Education Node" credential for a server operator who has stood up a healthy Verse and passed the operator quiz. Use at the end of node-wizard onboarding, or when an operator asks to (re)issue their node certificate or publish their Verse to the federated map. Signs the credential with the node's own key and optionally publishes it as a nostr badge and/or an OP_RETURN discovery announce.
 ---
 
 # Issue Node Certificate 🎓

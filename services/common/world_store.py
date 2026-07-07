@@ -16,7 +16,7 @@ Design notes:
     box is fine; callers wrap them in `asyncio.to_thread(...)` so the event loop never blocks.
   - Money/credential safety lives in `services/bitcoin-bridge` — this store only RECORDS the
     ledger of what was earned (schema-aligned with `class_certificates`). In dev the rune is a
-    mock; in prod the real mint txid/height/time come from `runes.py`.
+    mock; in prod the real etch txid/height/time come from `runes.py`.
 """
 
 from __future__ import annotations
@@ -65,6 +65,9 @@ class SqliteWorldStore:
                 room       TEXT NOT NULL DEFAULT 'entrance',
                 inventory  TEXT NOT NULL DEFAULT '[]',   -- JSON array
                 wallet     TEXT,
+                nostr      TEXT,                          -- linked nostr npub
+                space      TEXT,                          -- linked spaces @name
+                fren_tag   TEXT,                          -- the @fren handle
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
@@ -99,6 +102,12 @@ class SqliteWorldStore:
             );
             """
         )
+        # Additive migrations so older dev DBs pick up the identity columns without a wipe.
+        for col in ("nostr", "space", "fren_tag"):
+            try:
+                self.db.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self.db.commit()
 
     # --- players -----------------------------------------------------------
@@ -111,12 +120,16 @@ class SqliteWorldStore:
                 (name, wallet),
             )
             self.db.commit()
-            return {"name": name, "room": "entrance", "inventory": [], "wallet": wallet, "new": True}
+            return {"name": name, "room": "entrance", "inventory": [], "wallet": wallet,
+                    "nostr": None, "space": None, "fren_tag": None, "new": True}
         return {
             "name": row["name"],
             "room": row["room"],
             "inventory": json.loads(row["inventory"] or "[]"),
             "wallet": row["wallet"],
+            "nostr": row["nostr"],
+            "space": row["space"],
+            "fren_tag": row["fren_tag"],
             "new": False,
         }
 
@@ -124,6 +137,16 @@ class SqliteWorldStore:
         self.db.execute(
             "UPDATE players SET room = ?, inventory = ?, updated_at = datetime('now') WHERE name = ?",
             (room, json.dumps(inventory), name),
+        )
+        self.db.commit()
+
+    def set_identity(self, name: str, field: str, value: str) -> None:
+        """Link a MUD character to their external identity (nostr npub, spaces @name, @fren tag)."""
+        if field not in ("nostr", "space", "fren_tag"):
+            raise ValueError(f"unknown identity field: {field}")
+        self.db.execute(
+            f"UPDATE players SET {field} = ?, updated_at = datetime('now') WHERE name = ?",
+            (value, name),
         )
         self.db.commit()
 
@@ -148,9 +171,9 @@ class SqliteWorldStore:
             "SELECT 1 FROM class_certificates WHERE player = ? AND class_id = ?", (player, class_id)
         ).fetchone() is not None
 
-    def mint_certificate(self, player: str, class_id: str, rune_name: str, title: str,
+    def etch_certificate(self, player: str, class_id: str, rune_name: str, title: str,
                          wallet: str, block_height: int, block_time: Optional[str] = None) -> dict[str, Any]:
-        """Idempotent: minting a class a player already holds returns the ORIGINAL record
+        """Idempotent: etching a class a player already holds returns the ORIGINAL record
         (original block_time + wallet preserved) — that's the provenance guarantee, in miniature."""
         existing = self.db.execute(
             "SELECT * FROM class_certificates WHERE player = ? AND class_id = ?", (player, class_id)
@@ -203,7 +226,7 @@ class PostgresWorldStore:
     SCAFFOLDING: the SQL shape is real and schema-aligned, but this path is validated only when
     the Podman stack + Postgres are up. It lazy-imports `psycopg` so dev never needs the driver.
     Identity: dev keys players by name; in production `players.name` maps to a `users` row and the
-    real wallet/pubkey, and `class_certificates` carries the true mint txid/height/time from
+    real wallet/pubkey, and `class_certificates` carries the true etch txid/height/time from
     `services/bitcoin-bridge/runes.py`. Wire that mapping here when the stack lands.
     """
 
@@ -241,9 +264,9 @@ class PostgresWorldStore:
     def has_certificate(self, player: str, class_id: str) -> bool:
         raise NotImplementedError
 
-    def mint_certificate(self, player: str, class_id: str, rune_name: str, title: str,
+    def etch_certificate(self, player: str, class_id: str, rune_name: str, title: str,
                          wallet: str, block_height: int, block_time: Optional[str] = None) -> dict[str, Any]:
-        raise NotImplementedError("PostgresWorldStore.mint_certificate — INSERT class_certificates via runes.py")
+        raise NotImplementedError("PostgresWorldStore.etch_certificate — INSERT class_certificates via runes.py")
 
     def list_certificates(self, player: str) -> list[dict[str, Any]]:
         raise NotImplementedError

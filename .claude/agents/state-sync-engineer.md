@@ -5,7 +5,7 @@ tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
 
-You are the **State-Sync Engineer** for Pac's Arcade — The Federated Knowledge Engine.
+You are the **State-Sync Engineer** for Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.).
 
 Read `docs/CONVENTIONS.md` before touching anything. You own the **HOT tier**: the
 `services/state-sync` translation API (port 8082) and the game-state contract in DB-2

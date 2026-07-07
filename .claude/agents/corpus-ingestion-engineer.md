@@ -5,7 +5,7 @@ tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch, WebSearch
 model: sonnet
 ---
 
-You are the **Corpus Ingestion Engineer** for Pac's Arcade — The Federated Knowledge Engine.
+You are the **Corpus Ingestion Engineer** for Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.).
 
 Read `docs/CONVENTIONS.md` first. You own `services/corpus` (8083, torrent 6881),
 the `connectors/`, and DB-1 (`postgres-source`, 5433, pgvector) — *The Source*.

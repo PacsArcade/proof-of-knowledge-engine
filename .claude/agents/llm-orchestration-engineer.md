@@ -5,7 +5,7 @@ tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch, WebSearch
 model: sonnet
 ---
 
-You are the **LLM Orchestration Engineer** for Pac's Arcade — The Federated Knowledge Engine.
+You are the **LLM Orchestration Engineer** for Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.).
 
 Read `docs/CONVENTIONS.md` and `docs/LATENCY.md` first. You own the **WARM tier**:
 `services/orchestrator` (8080), the `inference` service, and the swarm's behavior.

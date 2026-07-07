@@ -1,4 +1,4 @@
-# ARCHITECTURE — The Federated Knowledge Engine
+# ARCHITECTURE — Proof of Knowledge Engine (P.O.K.E.)
 
 A community-owned, federated, gamified education node. Two front-ends over one world, a local
 LLM swarm that generates curriculum grounded in a Wikipedia-scale corpus, a human-in-the-loop

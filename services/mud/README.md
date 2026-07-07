@@ -1,6 +1,6 @@
 # mud — the text terminal front-end (telnet/ANSI) 💜
 
-> Part of **Pac's Arcade — The Federated Knowledge Engine**.
+> Part of **Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.)**.
 > See the canonical contract in [`docs/CONVENTIONS.md`](../../docs/CONVENTIONS.md).
 
 ## Role
@@ -42,17 +42,44 @@ it's generated, which is exactly how a MUD already feels. Streaming turns the WA
 
 ## How to run it
 
+**Dev mode (zero setup — this is what you run today):**
+
 ```bash
-docker compose up mud
-# or, local dev:
-cd services/mud
-python server.py           # listens on 0.0.0.0:4000
-# then, from another terminal:
-telnet localhost 4000
+python services/mud/server.py     # serves on 127.0.0.1:4000, persists to data/gamestate.dev.sqlite
+python services/mud/play.py       # a tiny client — or: telnet 127.0.0.1 4000
 ```
 
-Required env: `PA_INFERENCE_BASE_URL`, `PA_GEN_MODEL` (streamed dialogue); reaches `state-sync`
-at `http://state-sync:8082`.
+Dev mode keeps the world in a local SQLite file (`services/common/world_store.py`) and uses your
+local LLM if `PA_INFERENCE_BASE_URL` + `PA_GEN_MODEL` are set, else a scripted pacbot Oracle. Your
+room, inventory, `@fren`/nostr/spaces links, and etched runes persist across reconnects.
 
-> ⚠️ **Scaffolding.** `server.py` is a commented asyncio stub with `TODO`s where the telnet
-> protocol handling, the state-sync calls, and the token streaming go.
+**In the stack (production, Podman):**
+
+```bash
+podman compose -f infra/compose.yaml up mud
+```
+
+In production the MUD reaches `state-sync` at `http://state-sync:8082`; dev mode uses the store directly.
+
+## Operator console (server-side)
+
+The MUD is a node an operator runs, not a black box. One set of actions, three ways to drive it:
+
+- **Local stdin** — type commands in the terminal running `server.py`.
+- **In-MUD** — `admin <token>` elevates a player (token auto-generated + printed at startup, or set
+  `PA_ADMIN_TOKEN`), then `stats`, `nodes`, `broadcast`, `kick`, `reboot`, `shutdown`.
+- **HTTP rails** (for the web-admin page) — localhost-only by default on `PA_MUD_ADMIN_PORT` (4001),
+  `X-POKE-Admin-Token` auth: `GET /stats /nodes`, `POST /broadcast /kick /chat /reboot /shutdown`.
+
+What it surfaces:
+- **stats** — logged-in players (name/@fren, room, uptime, idle), node uptime, runes etched this
+  session, store backend, Oracle mode.
+- **nodes** — knowledge-swarm health: nodes synced, corpora/swarms, shard-cache ratio, manifest
+  verification (best-effort from `corpus`, cached, COLD/non-blocking; `PA_SWARM_MOCK` for demo).
+- **reboot** drains players and restarts (state persists); **shutdown** drains + closes the store.
+
+Matrix chat is **off by default** (`PA_CHAT_MATRIX`); when on, in-room `say` also relays to the
+Matrix verse room via `matrix-bridge` (COLD, never on the hot path).
+
+Env: `PA_INFERENCE_BASE_URL`, `PA_GEN_MODEL`, `PA_ADMIN_TOKEN`, `PA_MUD_ADMIN_HOST/PORT`,
+`PA_CHAT_MATRIX`, `PA_MATRIX_BRIDGE_URL`, `PA_CORPUS_URL`, `PA_SWARM_MOCK`. See `.env.example`.

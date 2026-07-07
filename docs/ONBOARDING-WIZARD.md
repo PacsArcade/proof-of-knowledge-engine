@@ -37,7 +37,7 @@ never touched Docker, or a sysadmin who's never taught. The wizard meets either 
    MUD and talk to the Oracle once.
 
 7. **Issue the certificate.** When the node is healthy AND the expertise quiz is passed, `issue-node-cert`
-   mints a **Certified Education Node** credential.
+   issues a **Certified Education Node** credential.
 
 ## The certificate
 

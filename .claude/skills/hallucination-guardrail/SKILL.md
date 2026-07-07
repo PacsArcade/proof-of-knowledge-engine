@@ -20,7 +20,7 @@ Source (DB-1)** or a human operator has approved it.
 
 ## Where speed and rigor split
 - **Prose can stream first, verify after.** Flavor text is low-stakes; let it scroll.
-- **Anything that mints value must pass before it mints.** A puzzle that unlocks a **seed-loot
+- **Anything that reveals value must pass before it reveals.** A puzzle that unlocks a **seed-loot
   fragment** cannot award the fragment until the content has passed the guardrail (and the
   operator, if quarantined). Fail **closed** on money paths. See `docs/SECURITY.md`.
 

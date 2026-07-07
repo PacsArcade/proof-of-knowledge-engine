@@ -221,7 +221,7 @@ def load_manifest(path: str) -> ShardManifest:
 
 
 # --------------------------------------------------------------------------- #
-# CLI — mint or check a manifest by hand                                       #
+# CLI — build or check a manifest by hand                                       #
 # --------------------------------------------------------------------------- #
 
 if __name__ == "__main__":

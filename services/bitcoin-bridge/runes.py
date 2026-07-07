@@ -3,16 +3,16 @@
 # =============================================================================
 # READ docs/SECURITY.md AND docs/RUNES.md BEFORE EDITING.
 #
-# This module etches and mints Bitcoin *runes* as soulbound class certificates
+# This module etches Bitcoin *runes* and issues them as soulbound class certificates
 # (Pac's Arcade "one rune per class / bitcoin POAP-equivalent" model). It moves
-# real value on non-regtest networks (etch + mint pay on-chain fees from the
+# real value on non-regtest networks (etch + issuance pay on-chain fees from the
 # non-profit "Arcade Treasury" wallet), so it is REGTEST-ONLY by default and
 # REFUSES real-value operations unless deliberately, verifiably unlocked.
 #
 # It does NOT define its own safety gate. It REUSES the one and only vault guard
 # from vault.py — `require_safe_network()` — so there is a single choke point for
 # the whole bitcoin-bridge service and NO chance of the two drifting apart. Every
-# value operation (etch, mint, reissue) calls `require_safe_network()` FIRST,
+# value operation (etch, issue, reissue) calls `require_safe_network()` FIRST,
 # before it touches ord / bitcoin-cli. Do not weaken it, do not add a real-value
 # path that skips it. Read-only lookups (verify, list) do not move funds and are
 # intentionally NOT gated, exactly like vault.scan_realm_directory().
@@ -30,9 +30,9 @@ SCAFFOLDING / STUB. The safety guard is REAL and mandatory (reused from vault.py
 The ord / bitcoin-cli bodies are TODOs; the DB shape, the guard calls, and the
 rune-naming convention are real.
 
-A class certificate is one *unit* of a per-class rune minted to a student's
+A class certificate is one *unit* of a per-class rune etched to a student's
 wallet when the Oracle confirms mastery (a guardrail-passed competency_node).
-Because the mint transaction naturally records the confirming block (height +
+Because the issuing transaction naturally records the confirming block (height +
 time) and the recipient address, the credential carries — for free, on-chain —
 both **when it was earned** and the **original wallet** that earned it. Those two
 facts are what make wallet-visibility and compromised-wallet recovery possible.
@@ -73,7 +73,7 @@ except ImportError:  # pragma: no cover - when imported as part of a package
 #                     to a plain bitcoin node; ord is what makes them queryable.
 # PA_TREASURY_WALLET— the non-profit "Arcade Treasury" wallet (ord/bitcoin-cli
 #                     wallet name) that OWNS every class rune and PAYS the etch +
-#                     mint fees. Students never pay to receive a certificate.
+#                     issuance fees. Students never pay to receive a certificate.
 # PA_BITCOIN_RPC    — reused from the vault; the regtest bitcoind RPC endpoint.
 PA_ORD_URL = os.environ.get("PA_ORD_URL", "http://ord:8080")
 PA_TREASURY_WALLET = os.environ.get("PA_TREASURY_WALLET", "arcade-treasury")
@@ -88,7 +88,7 @@ _RUNE_LETTERS = re.compile(r"[^A-Za-z]+")
 
 
 # --------------------------------------------------------------------------- #
-# The certificate record — the shape verify/list/mint return and the DB mirrors #
+# The certificate record — the shape verify/list/etch return and the DB mirrors #
 # (see infra/postgres/03-class-runes.sql :: class_certificates)                 #
 # --------------------------------------------------------------------------- #
 class ClassCertificate(TypedDict, total=False):
@@ -96,10 +96,10 @@ class ClassCertificate(TypedDict, total=False):
     rune_name: str           # PACS•<CLASS> display name
     rune_id: str             # ord rune id "block:tx" (e.g. "101:1"); stable handle
     student_pubkey: str      # learner identity (corresponds to users.pubkey)
-    original_wallet: str     # the address the certificate was FIRST minted to (provenance root)
+    original_wallet: str     # the address the certificate was FIRST etched to (provenance root)
     current_wallet: str      # where the rune unit lives now (differs iff moved)
     competency_ref: str      # pointer to the guardrail-passed competency_node
-    mint_txid: str           # the mint transaction
+    mint_txid: str           # the issuing (rune-mint) transaction
     block_height: Optional[int]   # confirming block — set after confirmation
     block_time: Optional[int]     # unix time of that block == "earned at" (from the header)
     soulbound: bool          # always true by convention
@@ -164,14 +164,14 @@ def etch_class_rune(class_id: str, rune_name: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 2. Mint — issue 1 unit of the class rune to a student as their certificate    #
+# 2. Etch — issue 1 unit of the class rune to a student as their certificate    #
 # --------------------------------------------------------------------------- #
-def mint_class_certificate(class_id: str, student_wallet: str, competency_ref: str) -> ClassCertificate:
-    """Mint exactly ONE unit of the class rune to `student_wallet` — the student's
+def etch_class_certificate(class_id: str, student_wallet: str, competency_ref: str) -> ClassCertificate:
+    """Etch exactly ONE unit of the class rune to `student_wallet` — the student's
     class certificate. Called when the Oracle confirms mastery (a guardrail-passed
     competency_node). Fees paid by the Arcade Treasury.
 
-    VALUE OPERATION — gated. Mint broadcasts a funded transaction.
+    VALUE OPERATION — gated. Issuance broadcasts a funded transaction.
 
     Flow (regtest + ord):
       1. require_safe_network — refuse under an unsafe posture.
@@ -181,14 +181,14 @@ def mint_class_certificate(class_id: str, student_wallet: str, competency_ref: s
       4. AFTER the tx confirms, read the confirming block from ord/bitcoin-cli and record:
            - block_height, block_time  (block_time == "earned at", straight from the header)
            - original_wallet = student_wallet  (the provenance root; never changes)
-           - current_wallet  = student_wallet  (equal at mint; diverges only if moved)
+           - current_wallet  = student_wallet  (equal at issuance; diverges only if moved)
       5. INSERT into DB-2 class_certificates (soulbound=true, network=PA_NETWORK).
     Returns the certificate record. `original_wallet` + `block_time` are the two facts that
     make wallet-visibility and compromised-wallet recovery work — both come free from the tx.
     """
-    require_safe_network("mint_class_certificate")
+    require_safe_network("etch_class_certificate")
     if not student_wallet:
-        raise ValueError("student_wallet is required to mint a certificate")
+        raise ValueError("student_wallet is required to etch a certificate")
     # TODO(ord): resolve/etch rune for class_id; `ord wallet mint` amount=1 to student_wallet
     #            funded by PA_TREASURY_WALLET; capture mint_txid; wait for 1 confirmation; read
     #            confirming block height+time; INSERT class_certificates(..., original_wallet=
@@ -203,7 +203,7 @@ def verify_certificate(rune_id: str, wallet: str) -> dict:
     """Soulbound verification. A certificate is VALID for the wallet that EARNED it.
 
     READ-ONLY — no funds move, so (like vault.scan_realm_directory) this is NOT gated;
-    verification must work on any node, even one that would refuse to mint.
+    verification must work on any node, even one that would refuse to issue.
 
     Rules (soulbound-by-convention + provenance):
       - valid  == (wallet == original_wallet), OR wallet is a treasury-attested reissue target
@@ -227,11 +227,11 @@ def reissue_certificate(rune_id: str, new_wallet: str, proof: str) -> ClassCerti
     """Recover a certificate to a NEW wallet when the original is compromised/lost.
 
     The whole reason runes work here: the earned credit lives on-chain (original_wallet +
-    block_time), so losing the wallet does NOT lose the education. The treasury re-mints /
+    block_time), so losing the wallet does NOT lose the education. The treasury re-issues /
     re-attributes to `new_wallet`, explicitly CITING the original provenance. The old record
     is marked SUPERSEDED, never destroyed — history is preserved, credit is portable.
 
-    VALUE OPERATION — gated. Re-mint broadcasts a funded transaction.
+    VALUE OPERATION — gated. Re-issuance broadcasts a funded transaction.
 
     Flow:
       1. require_safe_network — refuse under an unsafe posture.
@@ -250,9 +250,9 @@ def reissue_certificate(rune_id: str, new_wallet: str, proof: str) -> ClassCerti
     if not proof:
         # Recovery must be attested — never re-attribute a credential on an unproven claim.
         raise ValueError("reissue requires proof the new_wallet belongs to the original earner")
-    # TODO(ord): validate proof; re-mint 1 unit to new_wallet from PA_TREASURY_WALLET; carry
+    # TODO(ord): validate proof; re-issue 1 unit to new_wallet from PA_TREASURY_WALLET; carry
     #            original_wallet + block_time forward; mark the prior row superseded_by=<new id>.
-    raise NotImplementedError("TODO: attested re-mint to new wallet, supersede-not-destroy the old")
+    raise NotImplementedError("TODO: attested re-issue to new wallet, supersede-not-destroy the old")
 
 
 # --------------------------------------------------------------------------- #
@@ -279,4 +279,4 @@ if __name__ == "__main__":
     print(f"[runes] PA_NETWORK={PA_NETWORK} real_value_allowed={real_value_allowed()} "
           f"ord={PA_ORD_URL} treasury={PA_TREASURY_WALLET!r}")
     print(f"[runes] example rune name: {rune_name_for_class('bitcoin-basics')}")
-    raise SystemExit("TODO: wire a regtest-only CLI/self-test for class runes (etch→mint→verify)")
+    raise SystemExit("TODO: wire a regtest-only CLI/self-test for class runes (etch→issue→verify)")

@@ -1,12 +1,12 @@
 ---
 name: class-rune
-description: Mint a class-certificate rune when a student completes a class — a soulbound, non-transferable Bitcoin credential (one rune per class, bitcoin POAP-equivalent). Use to mint a class certificate rune, prove class completion, verify a soulbound credential, or recover compromised education certs by re-issuing to a new wallet. Regtest-only by default; etch fees paid by the non-profit Arcade Treasury. Complements issue-node-cert (which certifies OPERATORS) — this one is for STUDENT class completion.
+description: Etch a class-certificate rune when a student completes a class — a soulbound, non-transferable Bitcoin credential (one rune per class, bitcoin POAP-equivalent). Use to etch a class certificate rune, prove class completion, verify a soulbound credential, or recover compromised education certs by re-issuing to a new wallet. Regtest-only by default; etch fees paid by the non-profit Arcade Treasury. Complements issue-node-cert (which certifies OPERATORS) — this one is for STUDENT class completion.
 ---
 
 # Class-Rune 🎓⛓️ — soulbound class certificates on Bitcoin
 
 When a *fren* completes a class — the Oracle runs the Socratic interview, scores mastery, and
-writes a **guardrail-passed `competency_node`** — the node mints them a **class certificate as a
+writes a **guardrail-passed `competency_node`** — the node etches them a **class certificate as a
 Bitcoin rune**. One rune per class (Pac's Arcade "bitcoin POAP-equivalent" model). It lives in the
 student's own wallet, forever, as proof they did the work. 💜
 
@@ -29,7 +29,7 @@ Bitcoin has **no native soulbound primitive** — true non-transferability needs
 
 ## The regtest gate (non-negotiable)
 
-All value operations (etch, mint, reissue) go through `services/bitcoin-bridge/runes.py`, which
+All value operations (etch, issue, reissue) go through `services/bitcoin-bridge/runes.py`, which
 **reuses the vault's guard** — `require_safe_network()` from `vault.py`. One guard for the whole
 bitcoin-bridge service, so nothing drifts. It **refuses** real-value ops unless:
 
@@ -44,26 +44,26 @@ must be verifiable on any node. Never invent a mainnet path that skips the guard
 
 - `PA_ORD_URL` — the `ord` indexer/server (runes are invisible to a plain node; ord makes them queryable).
 - `PA_TREASURY_WALLET` — the non-profit **Arcade Treasury** wallet that OWNS every class rune and
-  **pays the etch + mint fees**. Students never pay to receive a certificate.
+  **pays the etch + issuance fees**. Students never pay to receive a certificate.
 - `PA_BITCOIN_RPC` — the regtest bitcoind RPC (reused from the vault).
 - Certificates are recorded in DB-2 `class_catalog` + `class_certificates` (`infra/postgres/03-class-runes.sql`).
 
-## Lifecycle: etch → mint → provenance → verify → reissue
+## Lifecycle: etch → issue → provenance → verify → reissue
 
 1. **Etch** (once per class, idempotent) — `etch_class_rune(class_id, rune_name)`. The Treasury
    etches ONE rune per class. Naming convention **`PACS•<CLASS>`** (e.g. `PACS•BITCOIN•BASICS`);
    the `•` is a display spacer, ord stores the A-Z letters. Fees from the non-profit wallet.
-2. **Mint** — `mint_class_certificate(class_id, student_wallet, competency_ref)`. Only after a
-   guardrail-passed `competency_node`. Mints **1 unit** of the class rune to the student's wallet;
+2. **Issue** — `etch_class_certificate(class_id, student_wallet, competency_ref)`. Only after a
+   guardrail-passed `competency_node`. Etches **1 unit** of the class rune to the student's wallet;
    captures `mint_txid`; after confirmation records `block_height`, `block_time`, `original_wallet`.
-3. **Provenance comes free.** The mint tx *naturally* records the **recipient address**
+3. **Provenance comes free.** The issuing tx *naturally* records the **recipient address**
    (`original_wallet`) and the **confirming block** (`block_height` + `block_time`). Those two
    facts — *who earned it* and *when* — are exactly what the wallet shows and what recovery needs.
 4. **Verify** — `verify_certificate(rune_id, wallet)`. Valid iff `wallet == original_wallet` (or a
    treasury-attested reissue tracing back to it). `moved = current_wallet != original_wallet`; a
    move flags provenance but preserves credit. Read-only; not gated.
 5. **Reissue** (compromised-wallet recovery) — `reissue_certificate(rune_id, new_wallet, proof)`.
-   Re-mints/re-attributes to `new_wallet`, **citing the original provenance**, and marks the old
+   Re-issues/re-attributes to `new_wallet`, **citing the original provenance**, and marks the old
    row `superseded_by` — **superseded, never destroyed**. Requires `proof` the new wallet belongs
    to the original earner; never reissue on an unproven claim.
 
@@ -83,7 +83,7 @@ education.** Because `original_wallet` + `block_time` are on-chain, the node ver
 provenance and re-issues to a fresh, safe wallet:
 
 1. Confirm identity → produce `proof` (re-passed check / signed attestation from the Oracle/operator).
-2. `reissue_certificate(rune_id, new_wallet, proof)` — Treasury re-mints 1 unit to `new_wallet`.
+2. `reissue_certificate(rune_id, new_wallet, proof)` — Treasury re-issues 1 unit to `new_wallet`.
 3. Original provenance is carried forward; the old cert is marked superseded (kept as history).
 
 The credit is portable; the history is honest. That's the whole point. 💜
@@ -91,7 +91,7 @@ The credit is portable; the history is honest. That's the whole point. 💜
 ## Rules
 
 - Regtest by default; mainnet obeys `docs/SECURITY.md`. Never weaken or bypass the vault guard.
-- Etch/mint fees are paid by the **non-profit Arcade Treasury** — students pay nothing.
+- Etch/issuance fees are paid by the **non-profit Arcade Treasury** — students pay nothing.
 - One rune per class; one live certificate per (student, class). Recovery supersedes, never deletes.
 - Soulbound is enforced by the **verifier**, not the chain — be honest that a transfer is possible
   and that we handle it with provenance, not by pretending it can't happen.

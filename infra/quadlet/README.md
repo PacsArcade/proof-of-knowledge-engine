@@ -1,7 +1,7 @@
 # Quadlet — the PRODUCTION path for the verse 💜
 
 These are **Podman Quadlet** systemd unit files. They let an operator run the
-whole Federated Knowledge Engine as **rootless `systemd --user` services**:
+whole Proof of Knowledge Engine (P.O.K.E.) as **rootless `systemd --user` services**:
 auto-restart on crash, start-on-boot, journald logs, ordered dependencies — no
 root, no daemon, no `docker.sock`.
 

@@ -43,6 +43,9 @@ def main() -> None:
         print(f"Couldn't reach the arcade at {host}:{port} — is the MUD running?  ({e})")
         print("Start it with:  python services/mud/server.py")
         return
+    # IMPORTANT: create_connection's 10s timeout is for CONNECTING only. Clear it now, or the
+    # socket keeps a 10s read timeout and drops you while you're reading (not typing). No kick.
+    sock.settimeout(None)
 
     stop = threading.Event()
 

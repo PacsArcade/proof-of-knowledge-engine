@@ -1,6 +1,6 @@
 # orchestrator — The Agent Swarm 💜
 
-> Part of **Pac's Arcade — The Federated Knowledge Engine**.
+> Part of **Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.)**.
 > See the canonical contract in [`docs/CONVENTIONS.md`](../../docs/CONVENTIONS.md).
 
 ## Role

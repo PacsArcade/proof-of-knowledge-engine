@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS seed_fragments (
     sss_share_ref  text         NOT NULL,                -- pointer/handle to the encrypted SSS share
     network        text         NOT NULL DEFAULT 'regtest'
                    CHECK (network IN ('regtest', 'testnet', 'mainnet')),  -- mainnet gated (see above)
-    minted         boolean      NOT NULL DEFAULT false,  -- has the on-chain artifact been created?
+    revealed       boolean      NOT NULL DEFAULT false,  -- has this fragment been revealed (on-chain artifact created)?
     holder_user_id bigint       REFERENCES users(id) ON DELETE SET NULL,  -- who currently holds it (NULL = in the world)
     created_at     timestamptz  NOT NULL DEFAULT now()
 );

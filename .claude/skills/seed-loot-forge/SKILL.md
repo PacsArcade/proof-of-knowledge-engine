@@ -1,6 +1,6 @@
 ---
 name: seed-loot-forge
-description: Design and wire the Bitcoin seed-phrase-as-loot reward mechanic — splitting a 24-word seed with Shamir's Secret Sharing, scattering shares as high-tier loot behind knowledge checks, and the "teach to mint the 24th word" twist. SAFETY-CRITICAL and REGTEST-ONLY by default. Use when building or changing any seed-loot, reward, or vault behavior. Always coordinate with the security-auditor.
+description: Design and wire the Bitcoin seed-phrase-as-loot reward mechanic — splitting a 24-word seed with Shamir's Secret Sharing, scattering shares as high-tier loot behind knowledge checks, and the "teach to reveal the 24th word" twist. SAFETY-CRITICAL and REGTEST-ONLY by default. Use when building or changing any seed-loot, reward, or vault behavior. Always coordinate with the security-auditor.
 ---
 
 # Seed-Loot Forge ⛓️🗝️
@@ -24,8 +24,8 @@ it with both hands on the wheel.
 - **Loot placement:** each share/word is a drop from a "Boss" that is really a **final exam** in
   a subject (the Calculus Golem drops word #4). Getting a word *requires proving domain knowledge*.
   Placement lives in DB-2 `seed_fragments` (fragment_index, item_id, sss_share_ref, network,
-  minted, holder). Guardrail must pass before a fragment mints (see `hallucination-guardrail`).
-- **The 24th-word twist:** the final word / checksum only mints when the player **teaches** the
+  revealed, holder). Guardrail must pass before a fragment is revealed (see `hallucination-guardrail`).
+- **The 24th-word twist:** the final word / checksum only reveals when the player **teaches** the
   concept to an NPC or another fren — verifying true understanding, and blocking brute-force.
 
 ## Player safety (consequences, not prohibitions)

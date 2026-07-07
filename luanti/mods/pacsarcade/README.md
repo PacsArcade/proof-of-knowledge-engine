@@ -1,11 +1,11 @@
 # pacsarcade — the Luanti (Minetest engine) mod 💜
 
-> Part of **Pac's Arcade — The Federated Knowledge Engine**.
+> Part of **Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.)**.
 > See the canonical contract in [`docs/CONVENTIONS.md`](../../../docs/CONVENTIONS.md).
 
 ## Role
 
-This mod is the **voxel-verse front-end** into the Federated Knowledge Engine — the graphical
+This mod is the **voxel-verse front-end** into P.O.K.E. — the graphical
 twin of the text MUD. It renders the world in 3D, but it does **not** own world state. Every
 world action funnels through the node-local `state-sync` service, so the Luanti world and the
 MUD are always looking at the **same** DB-2 game state. Pull a lever here, and the MUD player

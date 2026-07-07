@@ -1,6 +1,6 @@
 # bitcoin-bridge — the Vault: SSS seed loot, tipping, OP_RETURN discovery 💜
 
-> Part of **Pac's Arcade — The Federated Knowledge Engine**.
+> Part of **Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.)**.
 > See the canonical contract in [`docs/CONVENTIONS.md`](../../docs/CONVENTIONS.md)
 > and **`docs/SECURITY.md`** before touching anything here.
 

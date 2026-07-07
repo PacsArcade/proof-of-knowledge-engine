@@ -41,7 +41,7 @@ CO="$COMPOSE -f infra/compose.yaml --profile ${PA_INFERENCE_BACKEND}"
 
 # --- 1. Node identity (also the discovery key) -------------------------------
 if [[ -z "${PA_NODE_PUBKEY:-}" ]]; then
-  say "No node identity yet — minting one."
+  say "No node identity yet — issuing one."
   ./scripts/issue-cert.sh --keygen-only
   set -a; . ./.env; set +a
 fi

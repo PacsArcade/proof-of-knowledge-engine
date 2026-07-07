@@ -1,6 +1,6 @@
 # RUNES — soulbound class certificates on Bitcoin 🎓⛓️
 
-> When a *fren* completes a class, we mint them a **class certificate as a Bitcoin rune**. It lives
+> When a *fren* completes a class, we etch them a **class certificate as a Bitcoin rune**. It lives
 > in their own wallet, shows *when* they earned it and *which wallet* earned it, and — because that
 > lives on-chain — it survives a lost or compromised wallet. One rune per class; the bitcoin
 > POAP-equivalent of Pac's Arcade. 💜
@@ -15,14 +15,19 @@ contract. This doc explains the *why* and the *safety* of the class-rune credent
 
 ## Why runes for certificates
 
+On Bitcoin we **etch** a rune (define it) and **inscribe** ordinals — "minting" in the Runes
+protocol means open, permissionless claiming of an already-etched rune, which we deliberately
+avoid for soulbound credentials: each certificate is **etched/inscribed to its earner**, not
+openly mintable.
+
 A certificate should be **the student's**, portable, and verifiable without asking us for
 permission. Runes (Bitcoin's fungible-token protocol, indexed by `ord`) give us exactly that:
 
 - The credential lives in the **student's own wallet**, not our database.
-- The **mint transaction records the earn — for free**: the recipient address (the *original
+- The **issuing transaction records the earn — for free**: the recipient address (the *original
   wallet*) and the confirming block (its *height* and *time*). No extra bookkeeping to prove who
   earned what, and when.
-- It fits the Arcade model precisely: **one rune per class**, one unit minted per graduate — a
+- It fits the Arcade model precisely: **one rune per class**, one unit etched per graduate — a
   bitcoin-native POAP that says "this fren completed *this* class."
 
 ## The soulbound model — by convention + provenance
@@ -52,16 +57,16 @@ work, not *someone who bought your token*.
 This is deliberately the *opposite* of a bearer instrument. The value isn't the token — it's the
 provenance the token points at.
 
-## Provenance comes free from the mint tx
+## Provenance comes free from the issuing tx
 
-Two facts we need for both wallet-visibility and recovery are recorded by the mint transaction
+Two facts we need for both wallet-visibility and recovery are recorded by the issuing transaction
 itself — we don't invent them:
 
 | Fact | Where it comes from | Column |
 |------|--------------------|--------|
 | **When earned** | the confirming block's header time | `class_certificates.block_time` |
-| **Original wallet** | the mint tx's recipient address | `class_certificates.original_wallet` |
-| Confirming block | the block that mined the mint | `class_certificates.block_height` |
+| **Original wallet** | the issuing tx's recipient address | `class_certificates.original_wallet` |
+| Confirming block | the block that mined the issuing tx | `class_certificates.block_height` |
 | Which class | the rune etched for that class | `class_catalog.rune_name` (`PACS•<CLASS>`) |
 
 ## What the student's wallet shows
@@ -84,16 +89,16 @@ and re-issue to a fresh, safe wallet:
 
 1. **Prove identity** → produce `proof` (a re-passed identity check or a signed attestation from
    the Oracle/operator that the new wallet belongs to the same learner). No proof, no reissue.
-2. **`reissue_certificate(rune_id, new_wallet, proof)`** → the Arcade Treasury re-mints 1 unit to
+2. **`reissue_certificate(rune_id, new_wallet, proof)`** → the Arcade Treasury re-issues 1 unit to
    `new_wallet`, carrying the **original** provenance forward.
 3. **Supersede, don't destroy** → the old certificate row is marked `superseded_by` the new one and
    kept as history. Nothing is deleted; the credit is portable and the record is honest.
 
-## Etch, mint, and who pays
+## Etch, issue, and who pays
 
 - **Etch** (once per class, idempotent): the **Arcade Treasury** — the non-profit's wallet
   (`PA_TREASURY_WALLET`) — etches ONE rune per class and **pays the etch fee**.
-- **Mint** (per graduate): the Treasury mints 1 unit to the student and **pays the mint fee**.
+- **Issue** (per graduate): the Treasury etches 1 unit to the student and **pays the issuance fee**.
   **Students never pay to receive a certificate.** Fees are a cost the non-profit absorbs so the
   credential is free to earn.
 - **Naming:** `PACS•<CLASS>`. One rune per class, stable mapping (`runes.py::rune_name_for_class`).
@@ -104,18 +109,18 @@ Runes are **invisible to a plain Bitcoin node** — they need a runes-aware inde
 assume **regtest + `ord`**:
 
 - `PA_NETWORK=regtest` (default — play money, zero real risk; regtest name rules are relaxed).
-- `PA_ORD_URL` — the `ord` server/indexer that etches, mints, and answers rune queries.
+- `PA_ORD_URL` — the `ord` server/indexer that etches, issues, and answers rune queries.
 - `PA_TREASURY_WALLET` — the ord/bitcoin-cli wallet that owns the runes and pays fees.
 - `PA_BITCOIN_RPC` — the regtest bitcoind RPC (reused from the vault).
 
-`etch → mint → verify → reissue` all run against regtest + ord in dev.
+`etch → issue → verify → reissue` all run against regtest + ord in dev.
 
 ## The mainnet gate (safety is paramount)
 
-Class runes move real value on non-regtest networks (etch + mint pay on-chain fees), so
+Class runes move real value on non-regtest networks (etch + issuance pay on-chain fees), so
 `runes.py` **reuses the vault's single safety guard** — `require_safe_network()` from
 `services/bitcoin-bridge/vault.py`. It is **not** a second, drifting copy; it's the same choke
-point the seed-loot vault uses. Every value operation (etch, mint, reissue) calls it **first**.
+point the seed-loot vault uses. Every value operation (etch, issue, reissue) calls it **first**.
 
 Real-value operations are **refused** unless:
 
@@ -125,6 +130,6 @@ Real-value operations are **refused** unless:
 
 Read-only operations (`verify_certificate`, `list_wallet_certificates`) move no funds and are
 intentionally **not** gated — a certificate must be verifiable on any node, even one that would
-refuse to mint. There is **no** unguarded mainnet mint path, by design. Legal implications of
+refuse to issue. There is **no** unguarded mainnet issuance path, by design. Legal implications of
 issuing on-chain credentials from a non-profit are flagged for Pac + counsel in `docs/SECURITY.md`
 before any mainnet flip.

@@ -4,7 +4,7 @@
 > and tiers below. If you are a build agent, **treat this file as canonical.** Do not
 > invent new service names or ports; reference these.
 
-Pac's Arcade — **The Federated Knowledge Engine**. A community-owned, federated,
+Pac's Arcade — **Proof of Knowledge Engine (P.O.K.E.)**. A community-owned, federated,
 gamified education node. Fully open-source, self-hostable, offline-capable. No
 proprietary APIs, ever.
 

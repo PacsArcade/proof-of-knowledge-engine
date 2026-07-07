@@ -3,7 +3,7 @@
 --        (postgres-gamestate, host port 5432, HOT-tier DB / COLD-tier writer)
 -- ============================================================================
 -- When the Oracle confirms a learner has mastered a class (a guardrail-passed
--- competency_node), the node mints them a **class certificate as a Bitcoin
+-- competency_node), the node etches them a **class certificate as a Bitcoin
 -- rune** — Pac's Arcade "one rune per class" / bitcoin-POAP model. This script
 -- registers the per-class runes and records the certificates.
 --
@@ -56,10 +56,10 @@ COMMENT ON COLUMN class_catalog.etch_txid IS 'Etch transaction id; NULL until th
 
 
 -- ----------------------------------------------------------------------------
--- 2. class_certificates — a minted soulbound certificate (1 rune unit / student)
+-- 2. class_certificates — an etched soulbound certificate (1 rune unit / student)
 -- ----------------------------------------------------------------------------
--- One row per certificate minted to a learner. Provenance is the point:
---   * original_wallet + block_time come FREE from the mint transaction (the
+-- One row per certificate etched to a learner. Provenance is the point:
+--   * original_wallet + block_time come FREE from the issuing transaction (the
 --     recipient address and the confirming block header) and are IMMUTABLE —
 --     they record who earned it and exactly when.
 --   * current_wallet tracks where the rune unit lives now; when it differs from
@@ -69,7 +69,7 @@ COMMENT ON COLUMN class_catalog.etch_txid IS 'Etch transaction id; NULL until th
 --   * revoked is a separate, deliberate operator action (fraud/mistake), NOT the
 --     same as superseded.
 --
--- ⚠ MONEY SAFETY: `network` defaults to 'regtest'. Minting on 'mainnet' is only
+-- ⚠ MONEY SAFETY: `network` defaults to 'regtest'. Issuing on 'mainnet' is only
 -- legal once the operator has opted into the vault's mainnet gate (PA_MAINNET_ACK
 -- + security-auditor review — see docs/SECURITY.md). The app enforces the gate
 -- (runes.py reuses vault.require_safe_network); the DB defaults you to safety.
@@ -79,10 +79,10 @@ CREATE TABLE IF NOT EXISTS class_certificates (
     rune_name      text         NOT NULL,                -- denormalized PACS•<CLASS> for display
     rune_id        text,                                 -- ord rune id "block:tx" (NULL until confirmed)
     student_pubkey text         NOT NULL,                -- learner identity; corresponds to users.pubkey
-    original_wallet text        NOT NULL,                -- address first minted to — PROVENANCE ROOT (immutable)
-    current_wallet text         NOT NULL,                -- where the unit lives now (== original at mint)
+    original_wallet text        NOT NULL,                -- address first etched to — PROVENANCE ROOT (immutable)
+    current_wallet text         NOT NULL,                -- where the unit lives now (== original at issuance)
     competency_ref text         NOT NULL,                -- pointer to the guardrail-passed competency_node
-    mint_txid      text         NOT NULL,                -- the mint transaction
+    mint_txid      text         NOT NULL,                -- the issuing (rune-mint) transaction
     block_height   bigint,                               -- confirming block height (NULL until confirmed)
     block_time     timestamptz,                          -- confirming block time == "earned at" (from the header)
     soulbound      boolean      NOT NULL DEFAULT true,   -- non-transferable BY CONVENTION (see docs/RUNES.md)
@@ -106,15 +106,15 @@ CREATE INDEX IF NOT EXISTS class_certificates_class_idx           ON class_certi
 -- Resolve a certificate by its on-chain rune id.
 CREATE INDEX IF NOT EXISTS class_certificates_rune_id_idx         ON class_certificates (rune_id);
 -- One live certificate per (student, class): a student holds a class's rune once.
--- Superseded/revoked rows are excluded so recovery can re-mint without collision.
+-- Superseded/revoked rows are excluded so recovery can re-issue without collision.
 CREATE UNIQUE INDEX IF NOT EXISTS class_certificates_live_uniq
     ON class_certificates (student_pubkey, class_id)
     WHERE superseded_by IS NULL AND revoked = false;
 
 COMMENT ON TABLE  class_certificates IS 'Soulbound class-certificate runes (1 unit/student). REGTEST by default; mainnet gated. Provenance (original_wallet + block_time) is immutable and enables compromised-wallet recovery.';
-COMMENT ON COLUMN class_certificates.original_wallet IS 'Address the cert was FIRST minted to — the immutable provenance root the soulbound check trusts.';
+COMMENT ON COLUMN class_certificates.original_wallet IS 'Address the cert was FIRST etched to — the immutable provenance root the soulbound check trusts.';
 COMMENT ON COLUMN class_certificates.current_wallet  IS 'Current holder; differs from original_wallet iff the rune was moved (still valid for the earner).';
-COMMENT ON COLUMN class_certificates.block_time      IS '"Earned at" — the confirming block header time; comes free from the mint tx.';
+COMMENT ON COLUMN class_certificates.block_time      IS '"Earned at" — the confirming block header time; comes free from the issuing tx.';
 COMMENT ON COLUMN class_certificates.soulbound       IS 'True by convention. Bitcoin has no native soulbound primitive; the verifier enforces it (docs/RUNES.md).';
 COMMENT ON COLUMN class_certificates.superseded_by   IS 'Points at the reissued cert on compromised-wallet recovery. The old row is kept (superseded, not destroyed).';
 COMMENT ON COLUMN class_certificates.revoked         IS 'Deliberate operator revocation (fraud/error) — NOT the same as superseded.';
