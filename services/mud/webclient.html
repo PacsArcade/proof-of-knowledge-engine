@@ -80,6 +80,9 @@
     padding:.6rem 1.4rem;border-radius:12px;font-weight:bold;letter-spacing:.08em;text-shadow:0 0 14px var(--gold);
     box-shadow:0 0 40px -8px var(--gold);opacity:0;transition:opacity .3s}
   #toast.show{opacity:1}
+  #end{display:none;flex:1;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.4rem;color:var(--gold)}
+  #end #endmsg div{margin:.25rem 0;font-size:1.05rem;text-shadow:0 0 12px var(--gold)}
+  #end a{color:var(--amber);text-decoration:none}
   @media (max-width:560px){.panel{min-height:13rem}.top .sub{display:none}}
 </style>
 </head>
@@ -91,9 +94,10 @@
   </div>
 
   <section id="login">
-    <div class="marquee">PAC'S ARCADE&nbsp;&nbsp;presents</div>
+    <div class="marquee">PAC'S ARCADE</div>
+    <div class="marquee" style="margin-top:-.2rem">presents</div>
     <h1>P O K E M U D</h1>
-    <div class="tag">the Proof of Knowledge Engine</div>
+    <div class="tag">Proof of Knowledge Engine</div>
     <div class="node" id="node"></div>
     <div class="oracle">"I don't hand out answers — I trade in questions. Show me you truly understand a
       thing, and I'll etch it into a rune only you can carry. Insert a token, fren."</div>
@@ -107,7 +111,12 @@
     <div class="log" id="log"></div>
   </section>
 
-  <footer>
+  <section id="end">
+    <div id="endmsg"></div>
+    <div style="margin-top:1rem"><button id="again" class="door">▸ play again</button> <span id="endsite"></span></div>
+  </section>
+
+  <footer id="foot">
     <input id="cmd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
            placeholder="name yourself…">
     <button id="send">Send ⏎</button>
@@ -119,7 +128,7 @@
   const $ = id => document.getElementById(id);
   const THEME = {green:'#39ff9e',amber:'#ffbe3c',cyan:'#39e6ff',magenta:'#ff35c8',grey:'#9aa6bd',red:'#ff5a5a',gold:'#ffd24a'};
   const ARROW = {north:'▲ north',south:'▼ south',east:'► east',west:'◄ west',up:'↑ up',down:'↓ down'};
-  let ws=null, named=false;
+  let ws=null, named=false, done=false, endSite='';
 
   function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
   function fx(list){ if(!list||!list.length) return; const panel=$('panel');
@@ -151,15 +160,26 @@
   async function connect(){
     let cfg={ws_port:4002,local_site:'',node:'a POKE node'};
     try{ cfg=await (await fetch('/config')).json(); }catch(e){}
-    if(cfg.local_site) $('site').innerHTML=`<a href="${cfg.local_site}">← the arcade</a> · `;
+    if(cfg.local_site){ endSite=cfg.local_site; $('site').innerHTML=`<a href="${cfg.local_site}">← the arcade</a> · `; }
     const proto = location.protocol==='https:'?'wss':'ws';
     ws=new WebSocket(`${proto}://${location.hostname}:${cfg.ws_port}`);
     ws.onopen=()=>{ $('dot').classList.add('on'); $('cmd').focus(); };
     ws.onmessage=(e)=>{ let m; try{ m=JSON.parse(e.data); }catch(_){ return; }
       if(m.t==='hello'){ if(m.node) $('node').textContent='· '+m.node+' ·'; }
-      else if(m.t==='screen'){ renderScreen(m); } };
-    ws.onclose=()=>{ $('dot').classList.remove('on'); toast('reconnecting…'); setTimeout(connect,1500); };
+      else if(m.t==='prompt'){ $('node').textContent = m.text||''; }
+      else if(m.t==='screen'){ renderScreen(m); }
+      else if(m.t==='bye'){ done=true; showEnd(m.lines||['Goodnight, fren.']); }
+      else if(m.t==='signout'){ done=true; showEnd([m.text||'Signed out.','You opened POKEMUD on another device.']); }
+    };
+    ws.onclose=()=>{ $('dot').classList.remove('on'); if(done) return; toast('reconnecting…'); setTimeout(connect,1500); };
     ws.onerror=()=>{ try{ ws.close(); }catch(e){} };
+  }
+  function showEnd(lines){
+    $('login').classList.add('hidden'); $('game').classList.remove('show'); $('foot').style.display='none';
+    $('end').style.display='flex';
+    $('endmsg').innerHTML = lines.map(l=>`<div>${escapeHtml(l)}</div>`).join('');
+    $('endsite').innerHTML = endSite ? ` · <a href="${endSite}">back to the arcade</a>` : '';
+    $('again').onclick=()=>location.reload();
   }
   function sendCmd(v){ if(ws&&ws.readyState===1) ws.send(v); }
   function submit(){ const v=$('cmd').value; $('cmd').value=''; sendCmd(v); }

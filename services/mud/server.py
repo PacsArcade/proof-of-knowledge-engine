@@ -44,6 +44,9 @@ GEN_MODEL = os.environ.get("PA_GEN_MODEL", "")
 FRENS_URL = os.environ.get("PA_FRENS_URL", "")   # empty => this node is standalone
 MUD_WS_PORT = int(os.environ.get("PA_MUD_WS_PORT", "4002"))   # browser WebSocket bridge (play in a browser)
 LOCAL_SITE_URL = os.environ.get("PA_LOCAL_SITE_URL", "")      # the physically-local pacsarcade-area website
+# The world/verse this node hosts — shown in the operator console. Ties to the server's space once
+# the owner links it (PA_SPACE), else the node name, else the default POKEMUD world.
+WORLD = os.environ.get("PA_SPACE") or os.environ.get("PA_NODE_NAME") or "POKEMUD"
 
 
 def frens_aware() -> bool:
@@ -257,6 +260,8 @@ class Player:
         self.in_game = False               # False until past the name prompt
         self.web = False                   # True for browser clients (WebSocket + JSON render mode)
         self.pending_fx: list[str] = []    # one-shot effect cues for the web client (etch/victory/levelup)
+        self.session_start_xp = 0          # snapshots for the "goodnight" session summary
+        self.session_start_runes = 0
 
     async def send(self, text: str) -> None:
         self.writer.write(text.encode("utf-8", "replace"))
@@ -299,34 +304,54 @@ def push(p: Player, line: str) -> None:
     p.log = p.log[-LOG_H:]
 
 
+def _render_border(chars: list[str], doors: set) -> str:
+    """Join a border char list, coloring door positions CYAN (like the ◄ ► side doors) and the
+    rest magenta — so every exit is the same cyan-arrow style."""
+    out, i, n = "", 0, len(chars)
+    while i < n:
+        run = i in doors
+        j = i
+        while j < n and (j in doors) == run:
+            j += 1
+        seg = "".join(chars[i:j])
+        out += c(CYAN, seg) if run else c(MAG, seg)
+        i = j
+    return out
+
+
 def _frame(title: str, body: list[str], exits: dict, color: str) -> list[str]:
     W = BOARD_W
     rows = list(body)[:BODY_H]
     while len(rows) < BODY_H:
         rows.append("")
     mid = BODY_H // 2
-    top = list("═" * W)
-    sign = f"╡ {title} ╞"
-    for i, ch in enumerate(sign):
-        if 3 + i < W:
+
+    # top: cyan ▲ (north, centered) + a cyan ▲up corner (up), then the title
+    top = list("═" * W); tdoors = set()
+    if "north" in exits:
+        top[W // 2] = "▲"; tdoors.add(W // 2)
+    if "up" in exits:
+        for j, ch in enumerate("▲up"):
+            top[W - 7 + j] = ch; tdoors.add(W - 7 + j)
+    for i, ch in enumerate(f"╡ {title} ╞"):
+        if 3 + i < W and (3 + i) not in tdoors:
             top[3 + i] = ch
-    if "north" in exits:                 # doors are gaps/arrows in the frame
-        top[W // 2 - 1:W // 2 + 2] = list(" ▲ ")
-    if "up" in exits:                    # up/down have no wall edge, so label them (per-char = no resize)
-        for j, ch in enumerate("^up"):
-            top[W - 6 + j] = ch
-    out = [c(MAG, "╔") + c(MAG, "".join(top)) + c(MAG, "╗")]
+    out = [c(MAG, "╔") + _render_border(top, tdoors) + c(MAG, "╗")]
+
+    # sides: cyan ◄ / ► doors on the middle row
     for i, line in enumerate(rows):
         left = c(CYAN, "◄") if (i == mid and "west" in exits) else c(MAG, "║")
         right = c(CYAN, "►") if (i == mid and "east" in exits) else c(MAG, "║")
         out.append(left + " " + c(color, line[:W - 2].ljust(W - 2)) + " " + right)
-    bot = list("═" * W)
+
+    # bottom: cyan ▼ (south, centered) + a cyan ▼dn corner (down)
+    bot = list("═" * W); bdoors = set()
     if "south" in exits:
-        bot[W // 2 - 1:W // 2 + 2] = list(" ▼ ")
+        bot[W // 2] = "▼"; bdoors.add(W // 2)
     if "down" in exits:
-        for j, ch in enumerate("vdn"):
-            bot[W - 6 + j] = ch
-    out.append(c(MAG, "╚") + c(MAG, "".join(bot)) + c(MAG, "╝"))
+        for j, ch in enumerate("▼dn"):
+            bot[W - 7 + j] = ch; bdoors.add(W - 7 + j)
+    out.append(c(MAG, "╚") + _render_border(bot, bdoors) + c(MAG, "╝"))
     return out
 
 
@@ -397,6 +422,21 @@ async def show(p: Player) -> None:
         await p.send(json.dumps(screen_model(p)))
     else:
         await p.send(render_screen(p))
+
+
+# Command words a player may NOT use as a name (so nobody is called "help" or "quit").
+RESERVED_NAMES = {"help", "quit", "exit", "q", "look", "l", "admin", "oracle", "wraith", "boss",
+                  "say", "go", "north", "south", "east", "west", "up", "down", "n", "s", "e", "w",
+                  "talk", "answer", "ask", "challenge", "fight", "stats", "profile", "certs", "runes",
+                  "inventory", "inv", "i", "backup", "link", "verify", "who", "pull", "examine"}
+
+
+async def _prompt_again(p: "Player", text: str) -> None:
+    """Re-ask for a name (structured for web, ANSI for telnet)."""
+    if p.web:
+        await p.send(json.dumps({"t": "prompt", "text": text}))
+    else:
+        await p.send(c(AMBER, "\r\n" + text + " "))
 
 
 async def animate(p: Player, frames: list[list[str]], title: str, color: str = GOLD, hold: float = 0.5) -> None:
@@ -502,7 +542,7 @@ async def etch_class_rune(p: Player, spec: dict) -> None:
     old_level = p.level
     res = await asyncio.to_thread(STORE.add_xp, p.name, 100); p.xp, p.level = res["xp"], res["level"]
     p.pending_fx.append("etch")                        # cue the web client to glow/particle the etch
-    await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.0)
+    await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.3)
     focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
     if p.level > old_level:
         p.pending_fx.append("levelup")
@@ -684,8 +724,10 @@ def stats_json() -> dict:
     return {
         "uptime_s": int(time.time() - SERVER_START),
         "player_count": len(PLAYERS),
+        "world": WORLD,
         "players": [{
-            "name": p.name, "fren": p.fren_tag, "room": p.room,
+            "name": p.name, "fren": p.fren_tag, "world": WORLD, "room": p.room,
+            "client": "web" if p.web else "terminal",
             "uptime_s": int(time.time() - p.connected_at),
             "idle_s": int(time.time() - p.idle_since), "admin": p.is_admin,
         } for p in PLAYERS.values()],
@@ -698,6 +740,7 @@ def stats_json() -> dict:
 
 def stats_report() -> str:
     lines = ["P.O.K.E. MUD — operator stats",
+             f"  world       : {WORLD}",
              f"  uptime      : {_fmt_dur(time.time() - SERVER_START)}",
              f"  players     : {len(PLAYERS)} online"]
     for p in PLAYERS.values():
@@ -984,8 +1027,7 @@ WRAITH = {
 # The Wraith flickers position/face across frames so it visibly MOVES during the encounter.
 WRAITH_ANIM = [
     ["", "  it is in two places at once...", "", "        .-~~~-.", "      (  x   x  )", "       \\   ^   /", "        '-...-'", ""],
-    ["", "  ...here...", "", "              .-~~~-.", "            (  x   x  )", "             \\   ^   /", "              '-...-'", ""],
-    ["", "  ...and not-here...", "", "    .-~~~-.", "  (  X   X  )", "   \\   >   /", "    '-...-'", ""],
+    ["", "  ...here, and not-here...", "", "    .-~~~-.", "  (  X   X  )", "   \\   >   /", "    '-...-'", ""],
     ["", "  \"which history is TRUE?\"", "", "         .-~~~-.", "       (  @   @  )", "        \\   O   /", "         '-...-'", ""],
 ]
 WRAITH_DEFEAT = [
@@ -997,7 +1039,7 @@ WRAITH_DEFEAT = [
 
 async def boss_open(p: Player) -> None:
     p.boss_pending = WRAITH["id"]
-    await animate(p, WRAITH_ANIM, WRAITH["name"], RED, hold=1.1)
+    await animate(p, WRAITH_ANIM, WRAITH["name"], RED, hold=1.3)
     focus_text(p, WRAITH["name"], ["", "  " + WRAITH["name"] + " rounds on you.", ""]
                + ["  " + l for l in _wrap(WRAITH["question"], BOARD_W - 6)]
                + ["", "  (answer with:  answer <your words>)"], RED)
@@ -1006,17 +1048,24 @@ async def boss_open(p: Player) -> None:
 async def boss_judge(p: Player, ans: str) -> None:
     if any(k in ans.lower() for k in WRAITH["keys"]):
         p.boss_pending = None
+        # Anti-farming: reward (XP + rune + energy) is granted ONCE — the first time you learn it.
+        already = await asyncio.to_thread(STORE.has_certificate, p.name, WRAITH["class"]["class_id"])
         p.pending_fx.append("victory")                 # cue the web client's boss-defeat effect
-        await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " - defeated", GOLD, hold=1.1)
+        await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " - defeated", GOLD, hold=1.3)
+        if already:
+            focus_text(p, "Victory", ["", "  The Wraith yields — but you've already mastered this truth.", "",
+                                      "  No XP for a lesson you already own, fren. Come back when there's a",
+                                      "  NEW boss with something new to teach. (Harder rematch questions and",
+                                      "  boss riddles are on the way — see docs/ROADMAP.md.)"], GOLD)
+            push(p, c(GREY, "already mastered — no farming"))
+            return
+        old_level = p.level
         res = await asyncio.to_thread(STORE.add_xp, p.name, WRAITH["xp"]); p.xp, p.level = res["xp"], res["level"]
         p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, 20)
-        push(p, c(GOLD, f"⚔ the Wraith unravels — +{WRAITH['xp']} xp"))
-        if not await asyncio.to_thread(STORE.has_certificate, p.name, WRAITH["class"]["class_id"]):
-            await etch_class_rune(p, WRAITH["class"])
-        else:
-            focus_text(p, "Victory", ["", "  The Double-Spend Wraith is undone.", "",
-                                      "  Proof-of-work is what makes bitcoin's history single and settled —",
-                                      "  rewriting it means out-working the whole network. You knew it."], GOLD)
+        if p.level > old_level:
+            p.pending_fx.append("levelup")
+        push(p, c(GOLD, f"the Wraith unravels  (+{WRAITH['xp']} xp)"))
+        await etch_class_rune(p, WRAITH["class"])
     else:
         p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, -15)
         p.boss_pending = WRAITH["id"]
@@ -1373,7 +1422,19 @@ async def dispatch(p: Player, line: str) -> bool:
         return True
 
     if verb in ("quit", "exit", "q"):
-        await p.send(CLEAR + c(MAG, "The cabinets dim. Come back soon, fren. 💜\r\n"))
+        gained = p.xp - p.session_start_xp
+        new_runes = len(p.certs) - p.session_start_runes
+        lines = [
+            f"Goodnight, {display_name(p)}.",
+            "This session: +" + str(gained) + " xp" + (f", +{new_runes} rune(s)" if new_runes > 0 else "") + ".",
+            f"You're Level {p.level} · {p.xp} xp · {len(p.certs)} rune(s).",
+            "Come back and we'll pick up right where you left off. 💜",
+        ]
+        if p.web:
+            await p.send(json.dumps({"t": "bye", "lines": lines,
+                                     "summary": {"xp": p.xp, "level": p.level, "runes": len(p.certs), "gained": gained}}))
+        else:
+            await p.send(CLEAR + c(MAG, "\r\n  " + "\r\n  ".join(lines) + "\r\n"))
         return False
     if verb in ("help", "?", "commands"):
         focus_text(p, "How to play", HELP_LINES, GREY)
@@ -1515,15 +1576,42 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 await p.send(CLEAR + make_banner(col))
                 await asyncio.sleep(0.16)
             await p.send(c(AMBER, "\nBy what name shall the arcade know you, fren? "))
-        raw = await reader.readline()
-        name = clean_line(raw)
-        if name:
+        # --- name entry: reject command words as names (so no one is called "help"/"quit") ---
+        for _ in range(4):
+            raw = await reader.readline()
+            if not raw and reader.at_eof():
+                return
+            name = clean_line(raw)
+            if not name:
+                await _prompt_again(p, "a name, fren?")
+                continue
+            if name.lower() in RESERVED_NAMES:
+                await _prompt_again(p, f"'{name}' is a command, not a name — pick another, fren.")
+                continue
             p.name = name[:24]
+            break
+        else:
+            p.name = "a wandering fren"
+
+        # --- one live session per player: take over any existing one (fixes multi-device divergence) ---
+        for w2, other in list(PLAYERS.items()):
+            if other is not p and other.name == p.name:
+                try:
+                    if other.web:
+                        await other.send(json.dumps({"t": "signout", "text": "You signed in on another device."}))
+                    else:
+                        await other.send(c(RED, "\r\n-- you signed in on another device; this session is closed --\r\n"))
+                    w2.close()
+                except Exception:
+                    pass
+                PLAYERS.pop(w2, None)
+
         data = await asyncio.to_thread(STORE.get_or_create_player, p.name)
         p.room, p.inventory, p.wallet = data["room"], data["inventory"], data["wallet"]
         p.nostr, p.space, p.fren_tag = data["nostr"], data["space"], data["fren_tag"]
         p.xp, p.level, p.energy = data["xp"], data["level"], data["energy"]
         p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+        p.session_start_xp, p.session_start_runes = p.xp, len(p.certs)
         hello = f"@{p.fren_tag}" if p.fren_tag else p.name
 
         p.in_game = True
@@ -1539,9 +1627,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             else:
                 focus_room(p)
         else:
-            note = f" You carry {len(p.certs)} rune(s)." if p.certs else ""
-            push(p, c(MAG, f"Welcome back, {hello}.{note} Your progress was kept. 💜"))
-            focus_room(p)
+            # Welcome back with a summary + a nudge toward next goals.
+            focus_text(p, f"Welcome back, {hello}", [
+                "",
+                f"  Level {p.level} · {p.xp} xp · {len(p.certs)} rune(s) · energy {p.energy}/100",
+                f"  Last seen in: {ROOMS[p.room]['title']}",
+                "",
+                "  Good to see you, fren. What would you like to work on next?",
+                "  Ask the Oracle (north), face a boss (down), or just  look  around.",
+                "",
+            ], AMBER)
+            push(p, c(MAG, f"Welcome back, {hello}. Your progress was kept."))
         await broadcast_room(p.room, c(GREY, f"{hello} steps in from the street."), exclude=p)
         await show(p)
 

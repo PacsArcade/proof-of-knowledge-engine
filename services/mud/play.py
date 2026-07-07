@@ -10,6 +10,7 @@ Type your commands and press Enter. Type 'quit' to leave.
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 import threading
@@ -60,7 +61,10 @@ def main() -> None:
             sys.stdout.write(data.decode("utf-8", "replace"))
             sys.stdout.flush()
         stop.set()
-        print("\n-- disconnected from the arcade --")
+        print("\r\n-- disconnected from the arcade. GG, fren. --\r\n")
+        # The main thread is blocked on stdin.readline(); exit hard so the terminal returns to the
+        # shell cleanly (no lingering session, no stuck command history on the up-arrow).
+        os._exit(0)
 
     threading.Thread(target=reader, daemon=True).start()
 
