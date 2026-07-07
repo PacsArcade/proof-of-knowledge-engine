@@ -96,23 +96,24 @@ def c(color: str, s: str) -> str:
 
 
 # --- banner (simple + aligned; shown once before the game window) ------------
-def make_banner() -> str:
+def make_banner(accent: str = BOLD + GOLD) -> str:
+    """The login banner. `accent` colors the POKEMUD title — cycled to make it glimmer."""
     lines = [
         "",
         "PAC'S  ARCADE",
         "presents",
         "",
-        "◆  P . O . K . E .  ◆",
-        "Proof of Knowledge Engine",
+        "P  O  K  E  M  U  D",
+        "the Proof of Knowledge Engine",
         "",
-        "play to learn  ·  type  help  ·  quit  to leave",
+        "type  help  for the controls   ·   type  quit  to leave",
         "",
     ]
     width = max(len(l) for l in lines) + 8
     out = [c(MAG, "╔" + "═" * width + "╗")]
-    for i, ln in enumerate(lines):
-        if "P . O . K . E" in ln:
-            col = BOLD + GOLD
+    for ln in lines:
+        if "P  O  K  E" in ln:
+            col = accent
         elif "PAC'S" in ln:
             col = BOLD + AMBER
         elif "Proof of Knowledge" in ln:
@@ -121,10 +122,12 @@ def make_banner() -> str:
             col = GREY
         out.append(c(MAG, "║") + c(col, ln.center(width)) + c(MAG, "║"))
     out.append(c(MAG, "╚" + "═" * width + "╝"))
-    return "\n" + "\n".join(out) + "\n" + c(GREY, "  Welcome, fren. 💜") + "\n"
+    return "\n" + "\n".join(out) + "\n" + c(GREY, "  a study buddy for your cyberdeck  ·  welcome, fren. 💜") + "\n"
 
 
 BANNER = make_banner()
+# Colors the title cycles through on login so PAC'S ARCADE / POKEMUD glimmers.
+SHIMMER = [BOLD + GOLD, BOLD + CYAN, BOLD + MAG, BOLD + AMBER, BOLD + GREEN, BOLD + GOLD]
 
 HELP_LINES = [
     "How to play:",
@@ -212,12 +215,15 @@ LOG_H = 6        # message-log rows under the window
 
 
 # --- rune-etch animation (a boss/effect plays as frames INSIDE the window) ----
+# Frames use ASCII-only art (no double-width glyphs) so the window border never breaks.
 RUNE_ANIM = [
     ["", "", "            .   *   .", "         *    ( )    *", "            '   |   '",
-     "            the die is cut…", "", ""],
+     "            the die is cut...", "", ""],
     ["", "", "          * .    |    . *", "        (    \\   |   /    )", "          * '  \\ | /  ' *",
-     "            the rune takes form…", "", ""],
-    ["", "", "              \\   |   /", "            ——   ✦   ——", "              /   |   \\",
+     "            the rune takes form...", "", ""],
+    ["", "", "           \\    |    /", "         ---   (*)   ---", "           /    |    \\",
+     "            binding to the chain...", "", ""],
+    ["", "", "              \\  |  /", "            ==  RUNE  ==", "              /  |  \\",
      "            SEALED on-chain.", "", ""],
 ]
 
@@ -273,6 +279,8 @@ def focus_room(p: Player) -> None:
     others = [pl.name for w, pl in PLAYERS.items() if pl.room == p.room and pl is not p]
     if others:
         lines.append("Also here: " + ", ".join(others))
+    lines.append("")
+    lines.append("Exits: " + ", ".join(room["exits"].keys()))    # also shown as arrows on the frame
     p.focus = {"title": room["title"], "lines": lines, "color": GREEN}
 
 
@@ -296,9 +304,11 @@ def _frame(title: str, body: list[str], exits: dict, color: str) -> list[str]:
     for i, ch in enumerate(sign):
         if 3 + i < W:
             top[3 + i] = ch
-    if "north" in exits:
-        dp = W * 3 // 4
-        top[dp - 1:dp + 2] = list(" ▲ ")
+    if "north" in exits:                 # doors are gaps/arrows in the frame
+        top[W // 2 - 1:W // 2 + 2] = list(" ▲ ")
+    if "up" in exits:                    # up/down have no wall edge, so label them (per-char = no resize)
+        for j, ch in enumerate("^up"):
+            top[W - 6 + j] = ch
     out = [c(MAG, "╔") + c(MAG, "".join(top)) + c(MAG, "╗")]
     for i, line in enumerate(rows):
         left = c(CYAN, "◄") if (i == mid and "west" in exits) else c(MAG, "║")
@@ -306,8 +316,10 @@ def _frame(title: str, body: list[str], exits: dict, color: str) -> list[str]:
         out.append(left + " " + c(color, line[:W - 2].ljust(W - 2)) + " " + right)
     bot = list("═" * W)
     if "south" in exits:
-        dp = W // 2
-        bot[dp - 1:dp + 2] = list(" ▼ ")
+        bot[W // 2 - 1:W // 2 + 2] = list(" ▼ ")
+    if "down" in exits:
+        for j, ch in enumerate("vdn"):
+            bot[W - 6 + j] = ch
     out.append(c(MAG, "╚") + c(MAG, "".join(bot)) + c(MAG, "╝"))
     return out
 
@@ -419,7 +431,7 @@ def _llm_reply(question: str) -> str:
 def cert_card_lines(cert: dict) -> list[str]:
     return [
         "",
-        "  🎓  " + cert["rune_name"],
+        "  *  " + cert["rune_name"],
         "",
         "  Class:   " + cert["title"],
         "  Earned:  " + str(cert["block_time"]) + f"   (block {cert['block_height']})",
@@ -438,7 +450,7 @@ async def etch_class_rune(p: Player, spec: dict) -> None:
     )
     p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
     res = await asyncio.to_thread(STORE.add_xp, p.name, 100); p.xp, p.level = res["xp"], res["level"]
-    await animate(p, RUNE_ANIM, "Etching a rune…", GOLD, hold=0.6)
+    await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.0)
     focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
     push(p, c(GOLD, f"🎓 etched {spec['rune']}  (+100 xp)"))
 
@@ -507,22 +519,28 @@ async def verify_code(p: Player, code: str) -> None:
 
 
 async def backup_onchain(p: Player) -> None:
+    # No per-player Bitcoin clutter: the backup is a signed NOSTR event. Your runes are ALREADY
+    # on-chain (etched); this just ties them + your identity to your @fren so a lost device
+    # doesn't lose your record. Bitcoin is only touched by an OPTIONAL batched Merkle anchor
+    # (one tx for many players), timed to the space inscription cadence — never one tx each.
     payload = json.dumps({"fren": p.fren_tag, "wallet": p.wallet, "nostr": p.nostr, "space": p.space,
                           "runes": [x["rune_name"] for x in p.certs]}, sort_keys=True)
     digest = hashlib.sha256(payload.encode()).hexdigest()
-    txid = "bcrt1q" + digest[:16]
-    focus_text(p, "On-chain backup", [
+    ev_id = "nevent1" + digest[:24]
+    focus_text(p, "Backup your progress", [
         "",
-        "  Your progress is committed to the chain (regtest · mock):",
+        "  Signed and published as a NOSTR event — no clutter on Bitcoin. (mock)",
         "",
-        f"    attestation : {digest[:40]}…",
-        f"    txid        : {txid}",
-        f"    covers      : @{p.fren_tag or '—'} · {len(p.certs)} rune(s) · wallet {p.wallet[:14]}…",
+        f"    attestation : {digest[:40]}...",
+        f"    nostr event : {ev_id}",
+        f"    covers      : @{p.fren_tag or '-'} · {len(p.certs)} rune(s) · wallet {p.wallet[:14]}...",
         "",
-        "  In production this writes an OP_RETURN via bitcoin-bridge, so your",
-        "  runes + identity survive a lost device. Recover with your @fren. 💜",
+        "  Your runes already live on-chain (they're etched). This backup ties",
+        "  them to your @fren so a lost device never loses your record.",
+        "  Optional: your hash joins a BATCHED Merkle anchor (one tx for many,",
+        "  timed with the space inscription cadence) — never one tx per player.",
     ], GOLD)
-    push(p, c(GOLD, f"⛓ backup anchored: {txid}"))
+    push(p, c(GOLD, f"backup published to nostr: {ev_id}"))
 
 
 async def show_profile(p: Player) -> None:
@@ -545,7 +563,7 @@ async def show_certs(p: Player) -> None:
         return
     lines = ["", "  Your soulbound class runes:", ""]
     for cert in p.certs:
-        lines.append(f"  🎓 {cert['rune_name']}  — {cert['title']}")
+        lines.append(f"  * {cert['rune_name']}  -  {cert['title']}")
         lines.append(f"       earned {cert['block_time']} · block {cert['block_height']}")
     lines += ["", "  Non-transferable. Move one and provenance still names you."]
     focus_text(p, "Your runes", lines, GOLD)
@@ -902,22 +920,23 @@ WRAITH = {
              "heaviest chain", "most work", "confirmation", "consensus", "nakamoto", "hash"),
     "xp": 150,
 }
+# The Wraith flickers position/face across frames so it visibly MOVES during the encounter.
 WRAITH_ANIM = [
-    ["", "", "        .-~~~-.   .-~~~-.", "      /  x  x  \\ /  x  x  \\    it is in two places at once…",
-     "      \\   ^   / \\   ^   /", "        '-...-'   '-...-'", "", ""],
-    ["", "", "           .-~~~-.", "         /  X   X  \\     \"which history is TRUE?\"", "         \\   >   /",
-     "           '-...-'", "", ""],
+    ["", "  it is in two places at once...", "", "        .-~~~-.", "      (  x   x  )", "       \\   ^   /", "        '-...-'", ""],
+    ["", "  ...here...", "", "              .-~~~-.", "            (  x   x  )", "             \\   ^   /", "              '-...-'", ""],
+    ["", "  ...and not-here...", "", "    .-~~~-.", "  (  X   X  )", "   \\   >   /", "    '-...-'", ""],
+    ["", "  \"which history is TRUE?\"", "", "         .-~~~-.", "       (  @   @  )", "        \\   O   /", "         '-...-'", ""],
 ]
 WRAITH_DEFEAT = [
-    ["", "", "           .-~~~-.", "         /  x   x  \\     the forks collapse toward one…", "         \\   _   /",
-     "           '-...-'", "", ""],
-    ["", "", "            \\   |   /", "          ——  one chain  ——     the Wraith unravels.", "            /   |   \\", "", "", ""],
+    ["", "  the forks collapse toward one...", "", "        .-~~~-.", "      (  x   x  )", "       \\   _   /", "        '-...-'", ""],
+    ["", "  ...one chain...", "", "         .-~-.", "       (  -   -  )", "        \\  _  /", "         '-.-'", ""],
+    ["", "  the Wraith unravels.", "", "           \\  |  /", "         ==  ONE  ==", "           /  |  \\", "", ""],
 ]
 
 
 async def boss_open(p: Player) -> None:
     p.boss_pending = WRAITH["id"]
-    await animate(p, WRAITH_ANIM, WRAITH["name"], RED, hold=0.7)
+    await animate(p, WRAITH_ANIM, WRAITH["name"], RED, hold=1.1)
     focus_text(p, WRAITH["name"], ["", "  " + WRAITH["name"] + " rounds on you.", ""]
                + ["  " + l for l in _wrap(WRAITH["question"], BOARD_W - 6)]
                + ["", "  (answer with:  answer <your words>)"], RED)
@@ -926,7 +945,7 @@ async def boss_open(p: Player) -> None:
 async def boss_judge(p: Player, ans: str) -> None:
     if any(k in ans.lower() for k in WRAITH["keys"]):
         p.boss_pending = None
-        await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " — defeated", GOLD, hold=0.7)
+        await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " - defeated", GOLD, hold=1.1)
         res = await asyncio.to_thread(STORE.add_xp, p.name, WRAITH["xp"]); p.xp, p.level = res["xp"], res["level"]
         p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, 20)
         push(p, c(GOLD, f"⚔ the Wraith unravels — +{WRAITH['xp']} xp"))
@@ -935,7 +954,7 @@ async def boss_judge(p: Player, ans: str) -> None:
         else:
             focus_text(p, "Victory", ["", "  The Double-Spend Wraith is undone.", "",
                                       "  Proof-of-work is what makes bitcoin's history single and settled —",
-                                      "  rewriting it means out-working the whole network. You knew it. 💜"], GOLD)
+                                      "  rewriting it means out-working the whole network. You knew it."], GOLD)
     else:
         p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, -15)
         p.boss_pending = WRAITH["id"]
@@ -1422,7 +1441,10 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     p = Player(writer)
     PLAYERS[writer] = p
     try:
-        await p.send(RESIZE + CLEAR + BANNER)
+        await p.send(RESIZE)
+        for col in SHIMMER:                       # the banner glimmers on login ✨
+            await p.send(CLEAR + make_banner(col))
+            await asyncio.sleep(0.16)
         await p.send(c(AMBER, "\nBy what name shall the arcade know you, fren? "))
         raw = await reader.readline()
         name = clean_line(raw)
@@ -1485,7 +1507,7 @@ async def main() -> None:
     store_where = getattr(STORE, "path", "postgres DB-2")
     oracle = "local LLM" if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted pacbot fallback"
     SERVER = await asyncio.start_server(handle_client, MUD_HOST, MUD_PORT)
-    print(f"▓ Pac's Arcade · P.O.K.E. MUD on {MUD_HOST}:{MUD_PORT}  [persisted via {backend} @ {store_where}, Oracle: {oracle}] 💜")
+    print(f"▓ Pac's Arcade · POKEMUD on {MUD_HOST}:{MUD_PORT}  [persisted via {backend} @ {store_where}, Oracle: {oracle}] 💜")
     print(f"  Connect:  python services/mud/play.py    (or: telnet {MUD_HOST} {MUD_PORT})")
     http_srv = _start_admin_http()
     _start_console(LOOP)
@@ -1516,14 +1538,14 @@ async def main() -> None:
             pass
 
     if REBOOT:
-        print("▓ rebooting P.O.K.E. …")
+        print("▓ POKEMUD rebooting…")
         os.execv(sys.executable, [sys.executable] + sys.argv)
     else:
-        print("▓ P.O.K.E. stopped. GG, fren. 💜")
+        print("▓ POKEMUD is going offline. GG's, fren. 💜")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n▓ MUD shutting down. GG, fren. 💜")
+        print("\n▓ POKEMUD is going offline. GG's, fren. 💜")
