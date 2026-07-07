@@ -1,6 +1,6 @@
 <!-- Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.) -->
 
-# 🕹️ Pac's Arcade — The Proof of Knowledge Engine (P.O.K.E.)
+# 🕹️ Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.)
 
 > ### One mind. Every world.
 > P.O.K.E. is a local-first, self-hosted **education engine** — a tutor that can't make things up, a

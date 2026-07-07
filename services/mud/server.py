@@ -112,7 +112,7 @@ def make_banner(accent: str = BOLD + GOLD) -> str:
         "presents",
         "",
         "P  O  K  E  M  U  D",
-        "the Proof of Knowledge Engine",
+        "Proof of Knowledge Engine",
         "",
         "type  help  for the controls   ·   type  quit  to leave",
         "",
