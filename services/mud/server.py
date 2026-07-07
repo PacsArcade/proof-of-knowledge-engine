@@ -41,6 +41,8 @@ STATE_SYNC_URL = os.environ.get("PA_STATE_SYNC_URL", "")
 INFERENCE_BASE_URL = os.environ.get("PA_INFERENCE_BASE_URL", "")
 GEN_MODEL = os.environ.get("PA_GEN_MODEL", "")
 FRENS_URL = os.environ.get("PA_FRENS_URL", "")   # empty => this node is standalone
+MUD_WS_PORT = int(os.environ.get("PA_MUD_WS_PORT", "4002"))   # browser WebSocket bridge (play in a browser)
+LOCAL_SITE_URL = os.environ.get("PA_LOCAL_SITE_URL", "")      # the physically-local pacsarcade-area website
 
 
 def frens_aware() -> bool:
@@ -51,6 +53,7 @@ def frens_aware() -> bool:
 # --- persistence (shared with state-sync) ------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 import world_store  # noqa: E402
+import webbridge     # noqa: E402  (same dir as this file — the browser WebSocket bridge)
 
 try:
     STORE = world_store.open_store()
@@ -777,7 +780,9 @@ async def _status_ticker(interval: int = 60) -> None:
 # --- HTTP control rails (serves the web-admin page + JSON API) ----------------
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
 
-_ADMIN_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "admin.html")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ADMIN_HTML = os.path.join(_HERE, "admin.html")
+_WEBCLIENT_HTML = os.path.join(_HERE, "webclient.html")
 
 
 class _AdminHTTP(BaseHTTPRequestHandler):
@@ -793,9 +798,9 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _serve_page(self) -> None:
+    def _serve_html(self, path_on_disk: str) -> None:
         try:
-            with open(_ADMIN_HTML, "rb") as f:
+            with open(path_on_disk, "rb") as f:
                 body = f.read()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -803,15 +808,20 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         except FileNotFoundError:
-            self._reply(404, {"error": "admin.html not found"})
+            self._reply(404, {"error": os.path.basename(path_on_disk) + " not found"})
 
     def _run(self, coro, timeout: float = 4.0):
         return asyncio.run_coroutine_threadsafe(coro, LOOP).result(timeout=timeout)
 
     def do_GET(self) -> None:
         path = self.path.split("?")[0].rstrip("/")
-        if path in ("", "/admin", "/index.html"):      # the dashboard page loads without a token
-            return self._serve_page()
+        if path in ("", "/admin", "/index.html"):      # the operator dashboard (loads without a token)
+            return self._serve_html(_ADMIN_HTML)
+        if path in ("/play", "/mud", "/game"):         # the browser game client (public; you log in by name)
+            return self._serve_html(_WEBCLIENT_HTML)
+        if path == "/config":                          # public: how the browser client reaches the game
+            return self._reply(200, {"ws_port": MUD_WS_PORT, "local_site": LOCAL_SITE_URL,
+                                     "node": os.environ.get("PA_NODE_NAME", "a POKE node")})
         if not self._authed():
             return self._reply(401, {"error": "unauthorized"})
         if path in ("/stats", "/health"):
@@ -1500,6 +1510,18 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             pass
 
 
+async def _ws_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Bridge a browser WebSocket to the SAME game loop the telnet server uses (one engine, two
+    transports). See services/mud/webbridge.py and services/mud/webclient.html."""
+    if not await webbridge.handshake(reader, writer):
+        try:
+            writer.close()
+        except Exception:
+            pass
+        return
+    await handle_client(webbridge.WSReader(reader, writer), webbridge.WSWriter(writer))
+
+
 async def main() -> None:
     global SERVER, LOOP
     LOOP = asyncio.get_running_loop()
@@ -1507,8 +1529,12 @@ async def main() -> None:
     store_where = getattr(STORE, "path", "postgres DB-2")
     oracle = "local LLM" if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted pacbot fallback"
     SERVER = await asyncio.start_server(handle_client, MUD_HOST, MUD_PORT)
+    ws_server = await asyncio.start_server(_ws_client, MUD_HOST, MUD_WS_PORT)
     print(f"▓ Pac's Arcade · POKEMUD on {MUD_HOST}:{MUD_PORT}  [persisted via {backend} @ {store_where}, Oracle: {oracle}] 💜")
     print(f"  Connect:  python services/mud/play.py    (or: telnet {MUD_HOST} {MUD_PORT})")
+    print(f"  In a browser:  http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/play   (WebSocket bridge on {MUD_HOST}:{MUD_WS_PORT})")
+    if LOCAL_SITE_URL:
+        print(f"  Local arcade site: {LOCAL_SITE_URL}")
     http_srv = _start_admin_http()
     _start_console(LOOP)
     ticker = asyncio.create_task(_status_ticker())
@@ -1522,7 +1548,7 @@ async def main() -> None:
     print(f"    matrix chat : {'ON' if CHAT_MATRIX else 'off (default) — enable with  admin chat on'}")
 
     try:
-        async with SERVER:
+        async with SERVER, ws_server:
             await SHUTDOWN.wait()
     finally:
         ticker.cancel()

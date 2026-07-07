@@ -61,9 +61,16 @@ it's generated, which is exactly how a MUD already feels. Streaming turns the WA
 **Dev mode (zero setup — this is what you run today):**
 
 ```bash
-python services/mud/server.py     # serves on 127.0.0.1:4000, persists to data/gamestate.dev.sqlite
-python services/mud/play.py       # a tiny client — or: telnet 127.0.0.1 4000
+python services/mud/server.py     # telnet :4000 · WebSocket :4002 · console+game web :4001
+python services/mud/play.py       # a tiny terminal client — or: telnet 127.0.0.1 4000
 ```
+
+**Play in a browser** — open **`http://127.0.0.1:4001/play`**. A self-contained web client
+([`webclient.html`](webclient.html)) connects over a **stdlib WebSocket bridge**
+([`webbridge.py`](webbridge.py)) to the *same* game loop the telnet client uses — one engine, two
+transports — and renders the server's ANSI redraws with a tiny in-browser interpreter + a CRT
+theme. Great for the flagship site and phones/cyberdecks; the design team can restyle it freely.
+Point your local arcade site at it, and set `PA_LOCAL_SITE_URL` to link back from the console/game.
 
 Dev mode keeps the world in a local SQLite file (`services/common/world_store.py`) and uses your
 local LLM if `PA_INFERENCE_BASE_URL` + `PA_GEN_MODEL` are set, else a scripted pacbot Oracle. Your

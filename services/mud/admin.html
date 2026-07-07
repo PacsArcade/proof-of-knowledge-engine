@@ -223,9 +223,13 @@
 <header>
   <h1><span class="heart">💜</span> P.O.K.E. — NODE CONSOLE</h1>
   <div class="spacer"></div>
+  <a class="ghost-btn" href="/play" target="_blank" title="open POKEMUD in a browser">🎮 Play POKEMUD</a>
+  <a class="ghost-btn" id="local-site" style="display:none" target="_blank" title="the local arcade site">🏠 Arcade</a>
   <div class="conn"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting…</span></div>
   <button class="ghost-btn" id="signout">sign out</button>
 </header>
+<!-- link the console to the physically-local pacsarcade-area site, if configured -->
+<script>fetch('/config').then(r=>r.json()).then(c=>{if(c&&c.local_site){var a=document.getElementById('local-site');a.href=c.local_site;a.style.display='';}}).catch(function(){});</script>
 
 <main>
   <div class="grid">
