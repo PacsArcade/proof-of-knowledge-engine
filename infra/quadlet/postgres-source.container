@@ -1,0 +1,32 @@
+# DB-1: The Source (WARM+COLD, read-only pgvector). The exact corpus Markdown,
+# chunked + embedded. Listens on 5433 internally to match PA_DB1_URL.
+[Unit]
+Description=Pac's Arcade — DB-1 postgres-source (pgvector, read-only Source)
+
+[Container]
+ContainerName=postgres-source
+Image=docker.io/pgvector/pgvector:pg16
+Network=warm.network
+Network=cold.network
+PublishPort=5433:5433
+Exec=postgres -p 5433
+Volume=pgdata-source.volume:/var/lib/postgresql/data
+Volume=%h/pacsarcade/knowledge-engine/infra/postgres/01-db1-source.sql:/docker-entrypoint-initdb.d/01-db1-source.sql:ro
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+# Keep these in sync with infra/.env PA_DB1_*.
+Environment=POSTGRES_USER=arcade
+Environment=POSTGRES_PASSWORD=change-me
+Environment=POSTGRES_DB=source
+NoNewPrivileges=true
+DropCapability=all
+HealthCmd=pg_isready -p 5433 -U arcade -d source
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=5
+HealthStartPeriod=20s
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

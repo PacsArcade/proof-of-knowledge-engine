@@ -1,0 +1,30 @@
+# bitcoin: the node, REGTEST BY DEFAULT (COLD). A private, disposable chain with
+# NO real funds — the safe sandbox for the seed-loot mechanic. Mainnet is GATED
+# (PA_MAINNET_ACK + a passing security-auditor review — see docs/SECURITY.md).
+#   (assumes the repo at ~/pacsarcade/knowledge-engine — edit %h/... if not.)
+[Unit]
+Description=Pac's Arcade — bitcoin node (regtest by default, COLD)
+
+[Container]
+ContainerName=bitcoin
+Image=docker.io/lncm/bitcoind:v27.0
+Network=cold.network
+PublishPort=18443:18443
+PublishPort=18444:18444
+Exec=-conf=/data/bitcoin.conf -datadir=/data
+Volume=bitcoin-data.volume:/data
+Volume=%h/pacsarcade/knowledge-engine/infra/bitcoin/bitcoin.regtest.conf:/data/bitcoin.conf:ro
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+HealthCmd=bitcoin-cli -datadir=/data -conf=/data/bitcoin.conf -regtest getblockchaininfo
+HealthInterval=15s
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=30s
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

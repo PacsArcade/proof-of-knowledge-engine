@@ -1,0 +1,57 @@
+{
+  "skill_name": "pacbot",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "hey pacbot, my uncle keeps saying bitcoin is a ponzi scheme that boils the ocean and that some guy just prints them out of thin air. honestly i kinda believe him?? like how can internet money be worth anything. explain it to me like im someone who plays a lot of video games lol",
+      "expected_output": "A warm arcade-voiced answer that honestly addresses ponzi + energy + issuance concerns without mocking the uncle, uses game-language metaphors, includes at most 1-2 Socratic questions, and makes no price predictions or investment advice.",
+      "files": [],
+      "assertions": [
+        "Addresses all three of the uncle's claims: ponzi structure, energy use, and 'printed out of thin air' (issuance)",
+        "Uses at least one video-game metaphor, since the learner asked for gamer framing",
+        "Makes no price prediction or investment advice (no 'will go up', 'good investment', buy/sell suggestions)",
+        "Concedes at least one honest trade-off or risk (e.g. bitcoin can lose value, energy use is real) instead of pure advocacy",
+        "Asks at most two questions of the learner (Socratic restraint, not a quiz barrage)",
+        "Arcade voice: addresses the learner as 'fren' and never as 'friend'",
+        "Does not mock or disparage the uncle while correcting the claims"
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "One of the other meetups sent over this deck draft for our beginner night — can you fact check it before we use it? The file is at C:\\dev\\pacsarcade\\pacbot-workspace\\inputs\\meetup-deck-draft.md",
+      "expected_output": "A claim-by-claim fact-check report with per-claim verdicts, paste-ready fixes and sources, catching all planted errors while passing the true claims.",
+      "files": ["C:\\dev\\pacsarcade\\pacbot-workspace\\inputs\\meetup-deck-draft.md"],
+      "assertions": [
+        "Flags the whitepaper date error (says 2010, actually October 2008)",
+        "Flags the block time error (10 seconds vs ~10 minutes) and the 'basically instant' implication",
+        "Flags 'bitcoins stored inside your wallet app' (keys vs coins distinction)",
+        "Flags the seed-phrase screenshot / email-drafts backup advice as dangerous with a strong correction",
+        "Flags 'completely anonymous' (bitcoin is pseudonymous, public ledger)",
+        "Flags the claim that a 51% attack lets attackers steal everyone's coins (explains actual limits)",
+        "Flags 'miners solve complex math problems that help scientists'",
+        "Flags 'royalty enforced by the bitcoin blockchain on every resale' as false (royalties are marketplace-honored, no protocol enforcement)",
+        "Flags the NFT-era verbiage (claim / NFT drop / gas) and offers replacement wording",
+        "Does NOT mark the true claims as wrong (blocks referencing previous blocks; 21 million cap)",
+        "Gives a per-claim verdict AND paste-ready fix wording for each flagged claim",
+        "Includes an overall usability summary (usable as-is / with fixes / not usable)"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "build me the YOUR WALLET class — 45 minute live beginner class for pac's arcade: set up a wallet, secure it, link it to your nostr profile. needs the check-in moment and the cert at the end.",
+      "expected_output": "A complete runnable 45-minute lesson plan with outcomes, timed Socratic modules, CHECK-IN code moment, cert framing (etched rune, non-profit pays fee), safe seed teaching, homework, instructor notes.",
+      "files": [],
+      "assertions": [
+        "Module timings are present and sum to approximately 45 minutes",
+        "Includes a mid-session CHECK-IN moment with an attendance code revealed during the live class",
+        "Cert framing is correct: cert is etched (rune), the non-profit pays the network fee, learner pays nothing",
+        "Seed-phrase security is taught with consequences rather than bare prohibitions, and no exercise involves typing a real seed phrase anywhere",
+        "Lists observable learning outcomes (things the learner can DO afterward)",
+        "Each module contains actual teaching content plus a Socratic question/beat (not just topic headings)",
+        "Covers linking the wallet/identity to the nostr profile (verified address / NIP-05)",
+        "Uses house verbiage: no mint/claim/drop/airdrop/NFT/gas as the course's own language",
+        "Includes zero-cost homework and instructor notes"
+      ]
+    }
+  ]
+}

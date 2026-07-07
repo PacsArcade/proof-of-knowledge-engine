@@ -1,0 +1,13 @@
+{
+  "name": "nostr",
+  "type": "nostr",
+  "description": "Subscribes to long-form NIP-23 articles (kind 30023) from configured nostr relays and yields each as a record for the corpus ingest pipeline. COLD tier, network, opt-in.",
+  "enabled": false,
+  "config": {
+    "relays": [
+      "wss://relay.example.local"
+    ],
+    "kinds": [30023],
+    "authors": []
+  }
+}

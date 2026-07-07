@@ -1,0 +1,22 @@
+# guardrail: the hallucination check (WARM). Embeds generated content and
+# measures cosine similarity vs DB-1; below PA_GUARDRAIL_THRESHOLD -> quarantine.
+# Reads DB-1, calls inference for the embedding, persists nothing.
+[Unit]
+Description=Pac's Arcade — guardrail (hallucination check)
+Wants=postgres-source.service
+After=postgres-source.service
+
+[Container]
+ContainerName=guardrail
+Image=localhost/pacsarcade/guardrail:dev
+Network=warm.network
+PublishPort=8081:8081
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

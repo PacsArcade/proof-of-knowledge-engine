@@ -1,0 +1,95 @@
+# swarm.yaml — the five runtime agents of Pac's Arcade 💜
+# ---------------------------------------------------------------------------
+# SCAFFOLDING: this declares the agent swarm from docs/CONVENTIONS.md §4.
+# The orchestrator loads this at boot to spin up each persona, bind it to its
+# model (via the pluggable inference endpoint) and connect it to the Blackboard.
+#
+# Every agent:
+#   - has a persona spec in ./agents/<name>.md   (instruction + I/O + tier)
+#   - reasons on the WARM tier via PA_INFERENCE_BASE_URL
+#   - reads/writes shared state on the Blackboard (DB-2, postgres-gamestate)
+#
+# TODO: the orchestrator runtime should validate this file against a schema and
+#       fail fast if a persona spec or blackboard binding is missing.
+# ---------------------------------------------------------------------------
+
+version: 1
+
+# Shared connection every agent uses to reach the Blackboard (DB-2).
+# The Blackboard is the swarm's persistent memory: memory_node, memory_edge,
+# competency_node — see ./blackboard.py.
+blackboard: &blackboard
+  db: DB-2
+  service: postgres-gamestate
+  url_env: PA_DB2_URL                 # postgresql://…@postgres-gamestate:5432/gamestate
+  tables:
+    - memory_node                     # facts / observations the swarm remembers
+    - memory_edge                     # typed relationships between memory_nodes
+    - competency_node                 # a learner's demonstrated mastery of a topic
+
+# All generation flows through one OpenAI-compatible interface (inference service).
+inference: &inference
+  base_url_env: PA_INFERENCE_BASE_URL # http://inference:11434/v1 (ollama) or :8000/v1 (vllm)
+  model_env: PA_GEN_MODEL             # wizard-selected chat model
+
+agents:
+  - name: oracle
+    nickname: The Interview Bot
+    tier: WARM
+    persona: agents/oracle.md
+    model: *inference
+    # The Oracle's *brain* for bitcoin/nostr pedagogy is the pacbot skill, NOT a
+    # freeform prompt — it delegates every teaching turn to pacbot (Socratic,
+    # whitepaper-fluent) and awards mastery.
+    skill: pacbot                     # .claude/skills/pacbot
+    blackboard:
+      <<: *blackboard
+      reads:  [competency_node, memory_node]
+      writes: [competency_node, memory_node, memory_edge]
+
+  - name: architect
+    nickname: The Knowledge Agent
+    tier: WARM
+    persona: agents/architect.md
+    model: *inference
+    blackboard:
+      <<: *blackboard
+      reads:  [competency_node, memory_node, memory_edge]
+      writes: [memory_node, memory_edge]   # emits Training Dungeon room specs as memory
+
+  - name: custodian
+    nickname: The Vault
+    tier: WARM                        # reasoning is WARM; it hands vault ops to bitcoin-bridge (COLD)
+    persona: agents/custodian.md
+    model: *inference
+    # HARD RULE: regtest-only until security sign-off. Mirrors vault.py's guard.
+    network_gate:
+      requires: "PA_NETWORK in {regtest, testnet}"
+      mainnet_override: "PA_MAINNET_ACK=true AND PA_SEED_LOOT_ENABLED=true"
+      default: refuse
+    blackboard:
+      <<: *blackboard
+      reads:  [memory_node, competency_node]
+      writes: [memory_node, memory_edge]   # seed-fragment ledger references (never the phrase)
+
+  - name: archivist
+    nickname: The Corpus Keeper
+    tier: WARM                        # decisions WARM; ingest/torrent work delegated to corpus (COLD)
+    persona: agents/archivist.md
+    model: *inference
+    delegates_to: [corpus]            # corpus service :8083 / bt :6881
+    blackboard:
+      <<: *blackboard
+      reads:  [memory_node]
+      writes: [memory_node, memory_edge]
+
+  - name: warden
+    nickname: The Reviewer
+    tier: WARM                        # runs guardrail (WARM); routes quarantine via matrix-bridge (COLD)
+    persona: agents/warden.md
+    model: *inference
+    delegates_to: [guardrail, matrix-bridge]
+    blackboard:
+      <<: *blackboard
+      reads:  [memory_node, memory_edge]
+      writes: [memory_node]           # quarantine verdicts / operator decisions

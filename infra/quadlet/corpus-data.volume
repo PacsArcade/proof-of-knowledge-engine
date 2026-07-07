@@ -1,0 +1,7 @@
+# Torrents, ingest work dir, and the on-disk corpus cache the Archivist serves
+# cache-hits from before ever touching the mesh.
+[Unit]
+Description=Pac's Arcade corpus-data volume (torrents + cache)
+
+[Volume]
+VolumeName=corpus-data

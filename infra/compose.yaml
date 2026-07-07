@@ -1,0 +1,506 @@
+# =============================================================================
+# Pac's Arcade — The Federated Knowledge Engine — node compose (Podman)
+# =============================================================================
+# One box, one `podman compose up`, a whole federated learning verse. 💜
+#
+# ---------------------------------------------------------------------------
+# WHY PODMAN (this file REPLACES infra/docker-compose.yml)
+# ---------------------------------------------------------------------------
+# We run the verse on **rootless, daemonless Podman**. The security story:
+#   - No root daemon. There is no long-lived privileged process to compromise;
+#     containers are just child processes of *your* user, forked on demand.
+#   - No docker.sock. Nothing on the box hands out root-equivalent control of
+#     the container engine — the classic container-escape pivot is simply gone.
+#   - User namespaces. Container UID 0 maps to your unprivileged host UID (see
+#     /etc/subuid + /etc/subgid). "root in the container" is nobody on the host.
+# On top of that we harden every service: `no-new-privileges` and drop ALL
+# Linux capabilities by default, adding back only what a service truly needs.
+#
+# Run it:  podman compose -f infra/compose.yaml --profile ollama up -d
+#      or  podman compose -f infra/compose.yaml --profile vllm   up -d
+# (`podman compose` shells out to the Compose provider; `podman-compose` also
+# works — scripts/bootstrap.sh auto-detects which one you have.)
+#
+# ---------------------------------------------------------------------------
+# ROOTLESS BIND-MOUNT OWNERSHIP (userns / keep-id)
+# ---------------------------------------------------------------------------
+# Named volumes (pgdata-*, models, corpus-data, …) are managed by Podman and
+# get the right in-namespace ownership automatically — nothing to do. The only
+# host bind mounts here are read-only config files (:ro), which every container
+# user can read. If you ever switch a *data* dir to a host bind mount (e.g.
+# point pgdata at a host path), add `userns_mode: "keep-id"` to that service so
+# the container's runtime UID maps back to your host UID and Postgres can own
+# its files. We deliberately do NOT set it globally — keep-id narrows the
+# userns range and is only needed for host-path data mounts.
+#
+# ---------------------------------------------------------------------------
+# THE THREE TIERS (the latency contract — see docs/CONVENTIONS.md §1)
+# ---------------------------------------------------------------------------
+# Every service lives in one or more of three Podman networks that mirror the
+# three transport tiers. The tier is a *latency promise*, and the networks are
+# how we keep that promise honest:
+#
+#   hot   — < 50 ms, node-local, authoritative. The player's fingertips:
+#           MUD commands, Luanti world actions, state-sync, DB-2 game state.
+#   warm  — first token < 300 ms, local GPU. LLM generation + the guardrail
+#           embed check. Never leaves the box.
+#   cold  — seconds → minutes, async, eventually-consistent, and the ONLY tier
+#           that ever crosses the network: Matrix federation, the BitTorrent
+#           corpus mesh, and the (regtest!) Bitcoin node.
+#
+# THE ONE RULE: **the mesh is never on the hot path.** COLD services must NEVER
+# block gameplay. A corpus cache-miss degrades *in fiction* ("The Archivist is
+# retrieving that tome from the network…"), never as a hang. That is why:
+#   - HOT services (mud, luanti, state-sync) declare NO dependency on a WARM or
+#     COLD service. They boot and serve players even if the GPU or the mesh is
+#     down.
+#   - The Oracle turn (a WARM generation triggered by a HOT command) is handled
+#     by the orchestrator consuming an *intent* off the Blackboard (DB-2) and
+#     streaming the reply back through state-sync — the hot loop acks the player
+#     instantly ("The Oracle considers your words…") and never waits.
+#
+# ---------------------------------------------------------------------------
+# CONFIG / SECRETS
+# ---------------------------------------------------------------------------
+# Copy the repo-root `.env.example` to `infra/.env` and fill it in (the
+# node-wizard / `scripts/node-doctor.sh` does this for you). Every service
+# below loads it via the shared `env_file` anchor. `required: false` means the
+# stack still boots on the `${VAR:-default}` fallbacks even before you have a
+# .env — handy for a first smoke test, never for production.
+#
+# Offline-first: nothing here phones home. The only egress is a COLD-tier
+# connector the operator explicitly opts into.
+# =============================================================================
+
+# Compose Specification — no top-level `version:` key needed anymore. This file
+# targets the Compose-Spec feature set (profiles, env_file.required, healthcheck
+# conditions in depends_on) as understood by `podman compose` / `podman-compose`.
+
+# --- Shared building blocks (YAML anchors) -----------------------------------
+# Hardening lives in the anchor so EVERY service inherits it: rootless already
+# neuters "root", and this drops what little is left. Services that genuinely
+# need a capability add it back with their own `cap_add:` (none currently do —
+# every listener here binds a port > 1024, so not even NET_BIND_SERVICE).
+x-pa-service: &pa-service
+  # Keep services up across reboots; a crashed node should heal itself.
+  restart: unless-stopped
+  # No process may ever gain more privileges than it started with (blocks
+  # setuid-binary escalation). Compatible with Postgres/bitcoind's own
+  # entrypoint step-down, which uses the setuid *syscall*, not a setuid bit.
+  security_opt:
+    - "no-new-privileges:true"
+  # Drop the entire Linux capability set by default. Add back per-service only
+  # what is truly required.
+  cap_drop:
+    - ALL
+  env_file:
+    - path: .env
+      required: false
+
+# GPU for the inference backends is handled via **Podman CDI**, not the Docker
+# `deploy.resources.reservations.devices` block (which Podman ignores). Generate
+# the CDI spec once on the host, then reference the device by name in the
+# service's `devices:` list (see inference-ollama / inference-vllm below):
+#
+#   # rootful spec (system-wide):
+#   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+#   # rootless spec (this user only):
+#   nvidia-ctk cdi generate --output="$HOME/.config/cdi/nvidia.yaml"
+#
+# Verify with `nvidia-ctk cdi list` — you should see `nvidia.com/gpu=all`.
+
+services:
+  # ===========================================================================
+  # HOT TIER — the player's fingertips. Node-local, authoritative, < 50 ms.
+  # ===========================================================================
+
+  # --- DB-2: The Game State / the Blackboard --------------------------------
+  # The live world AND the agents' shared memory: users, topics, rooms, world
+  # objects, competency nodes, the seed-fragment ledger. Everything that must
+  # be instant and authoritative. The init SQL builds the schema on first boot.
+  postgres-gamestate:
+    <<: *pa-service
+    image: postgres:16-alpine
+    # cap_drop: ALL (inherited). No caps added: the entrypoint steps down from
+    # root → the 'postgres' user *inside the user namespace*, which Podman's
+    # rootless userns permits. If a future image needs the step-down done the
+    # hard way, add: cap_add: ["SETUID","SETGID","CHOWN","DAC_OVERRIDE","FOWNER"].
+    environment:
+      # These mirror PA_DB2_URL in your .env. Change them there AND here (or
+      # let the wizard template both) — Postgres reads these three, the app
+      # reads the URL.
+      POSTGRES_USER: ${PA_DB2_USER:-arcade}
+      POSTGRES_PASSWORD: ${PA_DB2_PASSWORD:-change-me}
+      POSTGRES_DB: ${PA_DB2_NAME:-gamestate}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata-gamestate:/var/lib/postgresql/data
+      # Init scripts run once, on an empty data dir, in filename order.
+      # (`/docker-entrypoint-initdb.d/` is the postgres image's own convention —
+      #  the path name is baked into the image, not a Docker-runtime thing.)
+      - ./postgres/02-db2-gamestate.sql:/docker-entrypoint-initdb.d/02-db2-gamestate.sql:ro
+    healthcheck:
+      # pg_isready gates every dependant so nothing races an unmigrated DB.
+      test: ["CMD-SHELL", "pg_isready -U ${PA_DB2_USER:-arcade} -d ${PA_DB2_NAME:-gamestate}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - hot
+
+  # --- state-sync: the translation API --------------------------------------
+  # The single source of truth for "what happened in the world." Normalizes
+  # Luanti ⇄ MUD ⇄ DB-2 so a torch lit in the voxel verse is the same event as
+  # `light torch` typed over telnet. Pure HOT: it writes intents to the
+  # Blackboard and returns instantly. The Oracle's (WARM) reply comes back
+  # later via the orchestrator calling this service — state-sync itself never
+  # waits on the GPU.
+  state-sync:
+    <<: *pa-service
+    build:
+      context: ..
+      dockerfile: services/state-sync/Dockerfile
+    image: pacsarcade/state-sync:dev
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres-gamestate:
+        condition: service_healthy
+    networks:
+      - hot
+
+  # --- mud: the text terminal ------------------------------------------------
+  # The oldest, most accessible interface in the verse: telnet/SSH + ANSI. Runs
+  # on the potato in the closet. HOT only.
+  mud:
+    <<: *pa-service
+    build:
+      context: ..
+      dockerfile: services/mud/Dockerfile
+    image: pacsarcade/mud:dev
+    ports:
+      - "4000:4000"
+    depends_on:
+      state-sync:
+        condition: service_started
+    networks:
+      - hot
+
+  # --- luanti: the Voxel Verse (Minetest engine) ----------------------------
+  # Same world as the MUD, rendered in blocks. UDP game protocol on 30000.
+  # Config + the `pacsarcade` mod live in ./luanti (see minetest.conf.example).
+  luanti:
+    <<: *pa-service
+    # Off-the-shelf engine image — pin to a digest for production. The Luanti/
+    # Minetest project ships server builds; swap this for your chosen tag.
+    image: registry.gitlab.com/minetest/minetest:latest
+    ports:
+      - "30000:30000/udp"
+    volumes:
+      # Server config + our mod. The world's world.mt enables the mod with
+      # `load_mod_pacsarcade = true`; minetest.conf trusts it (secure.*).
+      - ./luanti/minetest.conf.example:/etc/minetest/minetest.conf:ro
+      - ../luanti/mods/pacsarcade:/var/lib/minetest/.minetest/mods/pacsarcade:ro
+    depends_on:
+      state-sync:
+        condition: service_started
+    networks:
+      - hot
+
+  # ===========================================================================
+  # WARM TIER — local GPU generation. First token < 300 ms, never leaves the box.
+  # ===========================================================================
+
+  # --- DB-1: The Source (read-only, pgvector) -------------------------------
+  # The exact Markdown of the knowledge corpus, chunked + embedded. NOTHING
+  # writes here except the corpus ingest pipeline; readers use the `readonly`
+  # role (see 01-db1-source.sql). Lives on BOTH warm (the guardrail reads it at
+  # generation time) and cold (the corpus ingester writes it in the background).
+  # Runs on host port 5433 to match PA_DB1_URL, so we tell Postgres to listen on
+  # 5433 internally too — one address, in or out of the network.
+  postgres-source:
+    <<: *pa-service
+    # pgvector image = Postgres 16 with the `vector` extension prebuilt.
+    # `pgvector/pgvector` is the current official; `ankane/pgvector` also works.
+    image: pgvector/pgvector:pg16
+    command: ["postgres", "-p", "5433"]
+    environment:
+      POSTGRES_USER: ${PA_DB1_USER:-arcade}
+      POSTGRES_PASSWORD: ${PA_DB1_PASSWORD:-change-me}
+      POSTGRES_DB: ${PA_DB1_NAME:-source}
+    ports:
+      - "5433:5433"
+    volumes:
+      - pgdata-source:/var/lib/postgresql/data
+      - ./postgres/01-db1-source.sql:/docker-entrypoint-initdb.d/01-db1-source.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5433 -U ${PA_DB1_USER:-arcade} -d ${PA_DB1_NAME:-source}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - warm
+      - cold
+
+  # --- inference (OLLAMA variant) -------------------------------------------
+  # PLUGGABLE BACKEND #1. Only starts under `--profile ollama`. It answers to
+  # the DNS name `inference` (network alias) so the rest of the stack always
+  # calls `http://inference:11434/v1` regardless of which backend is live.
+  # The node-wizard picks Ollama for small/solo nodes: one binary, automatic
+  # model management, simplest path. See inference/ollama.md.
+  inference-ollama:
+    <<: *pa-service
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    # Rootless GPU via Podman CDI (spec generated by `nvidia-ctk cdi generate` —
+    # see the header). No --gpus, no toolkit OCI hook; Podman injects the device
+    # nodes named by the CDI spec. cap_drop: ALL still holds — GPU access is
+    # device-node + CDI driven, not capability driven.
+    devices:
+      - "nvidia.com/gpu=all"
+    environment:
+      # Bind to all interfaces so sibling containers can reach it.
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "11434:11434"
+    volumes:
+      # Pulled models persist here (`ollama pull ${PA_GEN_MODEL}` +
+      # `ollama pull nomic-embed-text`). Survives container recreation.
+      - models:/root/.ollama
+    networks:
+      warm:
+        aliases:
+          - inference   # <-- the canonical name the whole stack calls
+
+  # --- inference (VLLM variant) ---------------------------------------------
+  # PLUGGABLE BACKEND #2. Only starts under `--profile vllm`. Continuous
+  # batching → lower first-token latency and higher throughput when MANY
+  # players generate at once. Needs more VRAM discipline. See inference/vllm.md.
+  inference-vllm:
+    <<: *pa-service
+    profiles: ["vllm"]
+    image: vllm/vllm-openai:latest
+    # Rootless GPU via Podman CDI (spec generated by `nvidia-ctk cdi generate`).
+    devices:
+      - "nvidia.com/gpu=all"
+    # vllm/vllm-openai's entrypoint is the OpenAI API server; these are its flags.
+    command:
+      - "--model"
+      - "${PA_GEN_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}"
+      - "--quantization"
+      - "awq"                     # 4-bit AWQ keeps a 7-8B model inside 16 GB
+      - "--max-model-len"
+      - "8192"                    # cap context so KV-cache fits alongside weights
+      - "--gpu-memory-utilization"
+      - "0.90"
+      - "--port"
+      - "8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      # HuggingFace weight cache. Same named volume as Ollama — only one profile
+      # is ever up, so they never collide.
+      - models:/root/.cache/huggingface
+    networks:
+      warm:
+        aliases:
+          - inference   # NOTE: vLLM serves on :8000, so set
+                        # PA_INFERENCE_BASE_URL=http://inference:8000/v1
+
+  # --- orchestrator: the agent swarm ----------------------------------------
+  # openclaw-style coordinator hosting Oracle / Architect / Custodian /
+  # Archivist / Warden. It is the ONLY service that legitimately touches all
+  # three tiers, because that is its job — but it does so ASYNC and off the hot
+  # loop:
+  #   hot  → read/write the Blackboard (DB-2): consume Oracle intents, persist
+  #          generated rooms + competency, stream replies back via state-sync.
+  #   warm → call `inference` and the guardrail.
+  #   cold → the Warden routes a quarantine to the operator's Matrix admin room.
+  # Nothing a player types ever *waits* on this service; it works the Blackboard.
+  orchestrator:
+    <<: *pa-service
+    build:
+      context: ..
+      dockerfile: services/orchestrator/Dockerfile
+    image: pacsarcade/orchestrator:dev
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres-gamestate:
+        condition: service_healthy
+      # NB: no depends_on for `inference` — it is profile-gated and may be
+      # absent; the orchestrator degrades in-fiction if the GPU is cold.
+    networks:
+      - hot
+      - warm
+      - cold
+
+  # --- guardrail: the hallucination check -----------------------------------
+  # Embeds any AI-generated room/course/puzzle and measures cosine similarity
+  # against DB-1. Below PA_GUARDRAIL_THRESHOLD → the orchestrator marks the room
+  # `quarantined` and the Warden pings the operator. Pure WARM: reads DB-1,
+  # calls `inference` for the embedding, returns a verdict. It persists nothing.
+  guardrail:
+    <<: *pa-service
+    build:
+      context: ..
+      dockerfile: services/guardrail/Dockerfile
+    image: pacsarcade/guardrail:dev
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+    networks:
+      - warm
+
+  # ===========================================================================
+  # COLD TIER — async, eventually-consistent, the ONLY tier that crosses the
+  # network. MUST NEVER block gameplay.
+  # ===========================================================================
+
+  # --- corpus: the Archivist's engine ---------------------------------------
+  # Ingests the knowledge corpus (see connectors/), chunks + embeds it into
+  # DB-1, and seeds/leeches it over BitTorrent so nodes share the load. It
+  # reaches postgres-source over the `cold` network (DB-1 lives there too), so
+  # it needs no hot attachment. If the mesh is slow, gameplay does not care.
+  corpus:
+    <<: *pa-service
+    build:
+      context: ..
+      dockerfile: services/corpus/Dockerfile
+    image: pacsarcade/corpus:dev
+    ports:
+      - "8083:8083"        # ingest/control API
+      - "6881:6881/tcp"    # BitTorrent peer port (corpus mesh)
+      - "6881:6881/udp"    # BitTorrent DHT
+    volumes:
+      # Torrents, ingest scratch, and the on-disk corpus cache the Archivist
+      # serves cache-hits from before ever touching the mesh.
+      - corpus-data:/var/lib/corpus
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+    networks:
+      - cold
+
+  # --- matrix: the Dendrite homeserver --------------------------------------
+  # Federation + the operator's encrypted admin room (where quarantines land).
+  # 8008 = client API, 8448 = server-to-server federation (COLD/async). Config
+  # stub in ./dendrite; signing keys + media persist in matrix-data.
+  matrix:
+    <<: *pa-service
+    image: matrixdotorg/dendrite-monolith:latest
+    ports:
+      - "8008:8008"
+      - "8448:8448"
+    volumes:
+      - ./dendrite/dendrite.yaml.example:/etc/dendrite/dendrite.yaml:ro
+      - matrix-data:/etc/dendrite/persist   # matrix_key.pem, media, sqlite (solo)
+    networks:
+      - cold
+
+  # --- matrix-bridge: chat relay --------------------------------------------
+  # Mirrors MUD/Luanti in-world chat ⇄ Matrix rooms. Home tier is COLD (it talks
+  # to Dendrite), but it also joins `hot` to READ the live chat stream from
+  # state-sync — that read is async and buffered; a federation lag never stalls
+  # the world.
+  matrix-bridge:
+    <<: *pa-service
+    build:
+      context: ..
+      dockerfile: services/matrix-bridge/Dockerfile
+    image: pacsarcade/matrix-bridge:dev
+    ports:
+      - "8084:8084"
+    depends_on:
+      matrix:
+        condition: service_started
+    networks:
+      - hot
+      - cold
+
+  # --- bitcoin: the node (REGTEST BY DEFAULT) -------------------------------
+  # Regtest = a private, disposable chain with NO real funds. It is the safe
+  # sandbox for the seed-loot mechanic. Mainnet is GATED (PA_MAINNET_ACK + a
+  # passing security-auditor review — see docs/SECURITY.md). Config +
+  # rationale in ./bitcoin/bitcoin.regtest.conf.
+  bitcoin:
+    <<: *pa-service
+    # Community bitcoind image (ships bitcoin-cli for the healthcheck). Pin a
+    # digest in production; swap for your preferred build.
+    # cap_drop: ALL (inherited), none added — bitcoind binds RPC/P2P on high
+    # ports (>1024) and needs no extra capability under rootless Podman.
+    image: lncm/bitcoind:v27.0
+    command:
+      - "-conf=/data/bitcoin.conf"
+      - "-datadir=/data"
+    ports:
+      - "18443:18443"   # regtest RPC
+      - "18444:18444"   # regtest P2P
+    volumes:
+      - bitcoin-data:/data
+      - ./bitcoin/bitcoin.regtest.conf:/data/bitcoin.conf:ro
+    healthcheck:
+      # Uses the creds baked into the mounted conf via -conf.
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -conf=/data/bitcoin.conf -regtest getblockchaininfo || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - cold
+
+  # --- bitcoin-bridge: the Vault --------------------------------------------
+  # Custodian's hands: Shamir-Secret-Shared seed loot, Lightning-less sats
+  # tipping, OP_RETURN node discovery. Home tier COLD (it drives the bitcoin
+  # node), but it also joins `hot` to read/write the seed_fragments + tips
+  # ledgers in DB-2. All chain work is async — a slow block never blocks a
+  # player. Regtest-only until the Custodian passes security sign-off.
+  bitcoin-bridge:
+    <<: *pa-service
+    build:
+      context: ..
+      dockerfile: services/bitcoin-bridge/Dockerfile
+    image: pacsarcade/bitcoin-bridge:dev
+    ports:
+      - "8085:8085"
+    depends_on:
+      bitcoin:
+        condition: service_started   # started, not healthy: never block boot on IBD
+    networks:
+      - hot
+      - cold
+
+# =============================================================================
+# NETWORKS — the three tiers, made real. A service can only reach services that
+# share one of its networks, so the topology itself enforces the latency
+# contract. `internal: true` would fully air-gap a tier; we leave them bridged
+# so published ports work, and rely on the tier discipline above.
+#
+# Rootless Podman drives these with netavark (bridge) + pasta/slirp4netns for
+# host connectivity — no root, no docker0. `driver: bridge` maps to the rootless
+# bridge just the same.
+# =============================================================================
+networks:
+  hot:
+    driver: bridge
+  warm:
+    driver: bridge
+  cold:
+    driver: bridge
+
+# =============================================================================
+# VOLUMES — durable state that must outlive container recreation. Podman stores
+# these under ~/.local/share/containers/storage/volumes/ for your user (rootless).
+# =============================================================================
+volumes:
+  pgdata-gamestate:   # DB-2, the live world / Blackboard
+  pgdata-source:      # DB-1, the read-only vectorized corpus
+  bitcoin-data:       # regtest chain + wallet (disposable, but persisted)
+  models:             # pulled LLM + embedding weights (Ollama or vLLM cache)
+  corpus-data:        # torrents, ingest work dir, corpus cache
+  matrix-data:        # Dendrite signing key + media (+ sqlite on a solo node)

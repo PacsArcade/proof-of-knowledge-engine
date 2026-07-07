@@ -1,0 +1,23 @@
+# bitcoin-bridge: the Vault (COLD home, joins HOT for the DB-2 ledgers). SSS seed
+# loot, sats tipping, OP_RETURN discovery. All chain work is async — a slow block
+# never blocks a player. Regtest-only until the Custodian passes security sign-off.
+[Unit]
+Description=Pac's Arcade — bitcoin-bridge (the Vault)
+Wants=bitcoin.service
+After=bitcoin.service
+
+[Container]
+ContainerName=bitcoin-bridge
+Image=localhost/pacsarcade/bitcoin-bridge:dev
+Network=hot.network
+Network=cold.network
+PublishPort=8085:8085
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

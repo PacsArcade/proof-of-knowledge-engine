@@ -1,0 +1,6 @@
+# DB-1 (the read-only vectorized corpus / pgvector) durable storage.
+[Unit]
+Description=Pac's Arcade pgdata-source volume (DB-1)
+
+[Volume]
+VolumeName=pgdata-source

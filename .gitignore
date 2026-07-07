@@ -1,0 +1,27 @@
+# secrets & node identity
+.env
+*.key
+*.pem
+node-identity/
+*.seed
+*.shard
+
+# data & models (huge; distributed via the corpus mesh, not git)
+data/
+corpus/**/*.zim
+corpus/**/*.sqlite
+models/
+*.gguf
+*.safetensors
+pgdata/
+bitcoin-data/
+
+# runtime
+*.log
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+
+# certs are re-issuable; keep the private half out
+certs/*.private.json

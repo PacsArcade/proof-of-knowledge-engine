@@ -1,0 +1,23 @@
+# matrix: the Dendrite homeserver (COLD). Federation + the operator's encrypted
+# admin room (where quarantines land). 8008 = client API, 8448 = federation.
+#   (assumes the repo at ~/pacsarcade/knowledge-engine — edit %h/... if not.)
+[Unit]
+Description=Pac's Arcade — Matrix Dendrite homeserver (COLD)
+
+[Container]
+ContainerName=matrix
+Image=docker.io/matrixdotorg/dendrite-monolith:latest
+Network=cold.network
+PublishPort=8008:8008
+PublishPort=8448:8448
+Volume=%h/pacsarcade/knowledge-engine/infra/dendrite/dendrite.yaml.example:/etc/dendrite/dendrite.yaml:ro
+Volume=matrix-data.volume:/etc/dendrite/persist
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

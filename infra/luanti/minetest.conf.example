@@ -1,0 +1,80 @@
+# ===========================================================================
+# Luanti (Minetest engine) server config — the `luanti` service (HOT tier)
+# ===========================================================================
+# The Voxel Verse. This is the same world as the MUD, rendered in blocks;
+# state-sync keeps them in lockstep. Copy to `minetest.conf` and adjust.
+#
+# HOT-tier reminder: world actions must feel instant (< 50 ms). This server is
+# node-local and authoritative. It never waits on the GPU or the mesh — LLM
+# dialogue and federation happen elsewhere, asynchronously.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Server identity & networking
+# ---------------------------------------------------------------------------
+
+# How the world shows up to players.
+server_name = Pac's Arcade — Voxel Verse
+server_description = A federated learning verse. Mine knowledge, fren. 💜
+
+# UDP game port (matches the compose mapping 30000:30000/udp).
+port = 30000
+
+# Dedicated headless server, no local player window.
+server_dedicated = true
+
+# OFFLINE-FIRST: do NOT announce to the public serverlist. Your verse is yours;
+# discovery happens over the COLD Matrix/OP_RETURN layer if you opt in, not by
+# broadcasting to a global directory. Set true only if you deliberately want a
+# publicly listed server.
+server_announce = false
+
+# Room to grow a classroom; raise as your node's CPU/RAM allow.
+max_users = 32
+
+# ---------------------------------------------------------------------------
+# World / mapgen
+# ---------------------------------------------------------------------------
+
+# The base game providing nodes/items the pacsarcade mod builds on. Ship your
+# own game or use minetest_game. (The world's world.mt records the actual
+# game_id; this is the fallback when creating a new world.)
+default_game = minetest_game
+
+# A flat-ish mapgen keeps generated Training Dungeon rooms predictable for the
+# Architect to place. Swap to taste.
+mg_name = v7
+
+# ---------------------------------------------------------------------------
+# Mod security — trust ONLY the pacsarcade mod
+# ---------------------------------------------------------------------------
+# Mod security sandboxes untrusted Lua. The pacsarcade mod needs elevated
+# privileges (insecure environment) to talk to state-sync over HTTP, so we
+# explicitly TRUST it by name — and nothing else. Never blanket-trust all mods.
+secure.enable_security = true
+secure.trusted_mods = pacsarcade
+
+# Let the trusted mod make HTTP requests to state-sync (node-local only).
+secure.http_mods = pacsarcade
+
+# ---------------------------------------------------------------------------
+# Loading the pacsarcade mod
+# ---------------------------------------------------------------------------
+# The compose file mounts   luanti/mods/pacsarcade   into the engine's mod
+# search path. Enabling a mod is PER-WORLD, not a minetest.conf setting: the
+# world's `world.mt` must contain
+#
+#     load_mod_pacsarcade = true
+#
+# (create the world once, then set it — or ship a world.mt with it preset).
+# This is the mod that bridges Luanti world events ⇄ state-sync ⇄ DB-2, so the
+# voxel verse and the MUD stay one shared world.
+
+# ---------------------------------------------------------------------------
+# Gameplay defaults (tune per node)
+# ---------------------------------------------------------------------------
+creative_mode = false
+enable_damage = true
+
+# New players get no dangerous privileges by default; the operator grants more.
+default_privs = interact, shout

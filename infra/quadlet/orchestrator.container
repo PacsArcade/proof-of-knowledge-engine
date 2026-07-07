@@ -1,0 +1,24 @@
+# orchestrator: the agent swarm (WARM, touches all three tiers ASYNC). Hosts
+# Oracle / Architect / Custodian / Archivist / Warden over the Blackboard.
+# No hard dep on inference — it degrades in-fiction if the GPU is cold.
+[Unit]
+Description=Pac's Arcade — orchestrator (agent swarm)
+Wants=postgres-gamestate.service
+After=postgres-gamestate.service
+
+[Container]
+ContainerName=orchestrator
+Image=localhost/pacsarcade/orchestrator:dev
+Network=hot.network
+Network=warm.network
+Network=cold.network
+PublishPort=8080:8080
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

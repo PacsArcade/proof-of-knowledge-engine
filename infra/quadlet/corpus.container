@@ -1,0 +1,25 @@
+# corpus: the Archivist's engine (COLD). Ingests + chunks + embeds into DB-1 and
+# seeds/leeches over BitTorrent. Reaches postgres-source on the cold net. If the
+# mesh is slow, gameplay does not care.
+[Unit]
+Description=Pac's Arcade — corpus (ingest + torrent seeder)
+Wants=postgres-source.service
+After=postgres-source.service
+
+[Container]
+ContainerName=corpus
+Image=localhost/pacsarcade/corpus:dev
+Network=cold.network
+PublishPort=8083:8083
+PublishPort=6881:6881/tcp
+PublishPort=6881:6881/udp
+Volume=corpus-data.volume:/var/lib/corpus
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

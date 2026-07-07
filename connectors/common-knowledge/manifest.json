@@ -1,0 +1,11 @@
+{
+  "name": "common-knowledge",
+  "type": "torrent-swarm",
+  "description": "The canonical shared corpus. Pulls verified, content-addressed shards from Pac's Arcade's common-knowledge BitTorrent swarm and yields them as records for the corpus ingest pipeline. Manifest signature is checked against Pac's Arcade's pinned key before any shard is trusted into DB-1. COLD tier. On by default — this is the shared 'common knowledge' every Verse can carry.",
+  "enabled": true,
+  "config": {
+    "corpus_id": "common-knowledge",
+    "magnet": "",
+    "trackers": []
+  }
+}

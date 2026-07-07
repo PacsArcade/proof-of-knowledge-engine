@@ -1,0 +1,10 @@
+{
+  "name": "wikipedia-zim",
+  "type": "zim",
+  "description": "Reads a Kiwix ZIM archive (offline Wikipedia and friends) and yields each article as a record for the corpus ingest pipeline. COLD tier, offline-capable, opt-in.",
+  "enabled": false,
+  "config": {
+    "zim_path": "/corpus/zim/wikipedia_simple.zim",
+    "namespaces": ["A"]
+  }
+}

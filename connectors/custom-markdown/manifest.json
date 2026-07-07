@@ -1,0 +1,10 @@
+{
+  "name": "custom-markdown",
+  "type": "markdown",
+  "description": "Walks a local folder of .md files and yields each as a record for the corpus ingest pipeline. COLD tier, fully offline, opt-in. Great for a meetup's own notes.",
+  "enabled": false,
+  "config": {
+    "root_dir": "/corpus/markdown",
+    "glob": "**/*.md"
+  }
+}

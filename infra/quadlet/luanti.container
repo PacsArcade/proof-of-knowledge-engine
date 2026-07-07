@@ -1,0 +1,24 @@
+# luanti: the Voxel Verse (HOT). Same world as the MUD, rendered in blocks.
+# UDP game protocol on 30000. Config + the pacsarcade mod are bind-mounted :ro.
+#   (assumes the repo at ~/pacsarcade/knowledge-engine — edit %h/... if not.)
+[Unit]
+Description=Pac's Arcade — Luanti Voxel Verse (HOT)
+Wants=state-sync.service
+After=state-sync.service
+
+[Container]
+ContainerName=luanti
+Image=registry.gitlab.com/minetest/minetest:latest
+Network=hot.network
+PublishPort=30000:30000/udp
+Volume=%h/pacsarcade/knowledge-engine/infra/luanti/minetest.conf.example:/etc/minetest/minetest.conf:ro
+Volume=%h/pacsarcade/knowledge-engine/luanti/mods/pacsarcade:/var/lib/minetest/.minetest/mods/pacsarcade:ro
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

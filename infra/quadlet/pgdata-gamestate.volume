@@ -1,0 +1,7 @@
+# DB-2 (game state / Blackboard) durable storage. Podman-managed named volume;
+# rootless ownership is handled inside the user namespace automatically.
+[Unit]
+Description=Pac's Arcade pgdata-gamestate volume (DB-2)
+
+[Volume]
+VolumeName=pgdata-gamestate

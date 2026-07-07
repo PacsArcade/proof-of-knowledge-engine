@@ -1,0 +1,6 @@
+# Regtest chain + wallet (disposable, but persisted across container recreation).
+[Unit]
+Description=Pac's Arcade bitcoin-data volume (regtest chain)
+
+[Volume]
+VolumeName=bitcoin-data

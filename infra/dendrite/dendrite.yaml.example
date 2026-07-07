@@ -1,0 +1,99 @@
+# =============================================================================
+# Dendrite homeserver — Pac's Arcade `matrix` service  (COLD tier)
+# =============================================================================
+# Copy to `dendrite.yaml` and fill in the blanks (the node-wizard templates
+# ${PA_MATRIX_SERVER_NAME} for you). Dendrite does NOT expand env vars itself —
+# these ${...} placeholders are substituted at deploy time by the wizard /
+# node-doctor. Anything still wrapped in ${...} at runtime is a bug.
+#
+# WHAT MATRIX IS FOR HERE (two jobs):
+#   1. Federation — the COLD, async, cross-network backbone. Nodes gossip and
+#      bridge chat over server-to-server federation on port 8448. This is the
+#      ONE tier allowed to leave the box, and it must NEVER be on the hot path:
+#      a slow or offline peer degrades in-fiction, it never stalls the world.
+#   2. The operator's encrypted ADMIN ROOM — where the Warden posts guardrail
+#      QUARANTINE notifications. When a generated room scores below
+#      PA_GUARDRAIL_THRESHOLD, the operator gets pinged here to approve or
+#      reject. The human is the final guardrail, so this room should be an
+#      end-to-end encrypted, invite-only room the operator actually watches.
+#
+# Ports (published by the compose file, terminated by your reverse proxy):
+#   8008 — client-server API (apps, bridges, the matrix-bridge service)
+#   8448 — server-server federation (COLD; TLS in production)
+# =============================================================================
+
+version: 2
+
+global:
+  # Your homeserver's identity. MUST be stable forever once you federate — it
+  # is baked into every event and room id. Can be a public domain, a LAN name,
+  # or a .onion for a fully private verse.
+  server_name: ${PA_MATRIX_SERVER_NAME}
+
+  # Ed25519 signing key that proves events came from this server. Generate once
+  # and NEVER lose it (losing it breaks federation for every room you're in):
+  #   docker run --rm --entrypoint generate-keys \
+  #     matrixdotorg/dendrite-monolith:latest -private-key /dev/stdout \
+  #     > persist/matrix_key.pem
+  private_key: /etc/dendrite/persist/matrix_key.pem
+
+  # Advertise the federation endpoint on 8448.
+  well_known_server_name: "${PA_MATRIX_SERVER_NAME}:8448"
+
+  # -------------------------------------------------------------------------
+  # Database. Monolith mode shares one connection string across all components.
+  # SOLO / offline default: a local SQLite file (zero extra services) —
+  #   connection_string: file:/etc/dendrite/persist/dendrite.db
+  # BUSY node: point at Postgres. Give Matrix its OWN database — do NOT reuse
+  # DB-1 (the read-only Source) or DB-2 (the game Blackboard).
+  # -------------------------------------------------------------------------
+  database:
+    connection_string: file:/etc/dendrite/persist/dendrite.db
+    max_open_conns: 10
+    max_idle_conns: 5
+    conn_max_lifetime: -1
+
+client_api:
+  # OPERATOR-ONLY node. Open registration is OFF — this is not a public server;
+  # accounts are created by invite / by the operator via the admin API. Keeps
+  # the verse a curated, non-custodial community, not a spam magnet.
+  registration_disabled: true
+  guests_disabled: true
+  # Leave empty so nobody can self-register with a shared secret. Create the
+  # operator + bridge accounts out-of-band:
+  #   create-account -config dendrite.yaml -username warden -admin
+  registration_shared_secret: ""
+  # Light rate limiting is fine on a solo node; raise for many concurrent users.
+  rate_limiting:
+    enabled: true
+    threshold: 20
+    cooldown_ms: 500
+
+federation_api:
+  # Federation IS enabled (that's the COLD mesh). To run a fully air-gapped,
+  # single-node verse, set this to false and Matrix becomes local-only chat +
+  # the admin room, with zero network egress.
+  # disable_federation: false
+  #
+  # Trust anchors for verifying other servers' keys. Fine as-is for most nodes.
+  key_perspectives:
+    - server_name: matrix.org
+      keys:
+        - key_id: ed25519:auto
+          public_key: Noi6WqcDj0QmPxCNQqgezwTlBKrfqehY1u2FyWP9uYw
+
+# --- Component notes ---------------------------------------------------------
+# The monolith image runs these internally; defaults are sensible. The
+# matrix-bridge service (compose: matrix-bridge, port 8084) connects as an
+# application service / bot to mirror MUD + Luanti chat into Matrix rooms — its
+# registration yaml goes under app_service_api.config_files when you add it.
+sync_api:
+  real_ip_header: X-Forwarded-For
+
+media_api:
+  base_path: /etc/dendrite/persist/media
+  max_file_size_bytes: 10485760   # 10 MiB; bump if you share large lesson assets
+
+logging:
+  - type: std
+    level: info

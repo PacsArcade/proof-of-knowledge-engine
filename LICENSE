@@ -1,0 +1,22 @@
+Pac's Arcade — The Federated Knowledge Engine
+Copyright (C) 2026 Pac's Arcade (a non-profit) and contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>.
+
+------------------------------------------------------------------------------
+Why AGPL-3.0: this engine is meant to be forked and run by community operators.
+The Affero clause means anyone who runs a modified node and offers it over a
+network must share their source. That is what keeps every Verse community-owned.
+
+NOTE TO PACKAGER: append the full canonical AGPL-3.0 text below this line before
+distribution (https://www.gnu.org/licenses/agpl-3.0.txt). SPDX-License-Identifier: AGPL-3.0-or-later

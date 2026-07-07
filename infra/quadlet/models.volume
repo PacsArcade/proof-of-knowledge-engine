@@ -1,0 +1,7 @@
+# Pulled LLM + embedding weights (Ollama models or the vLLM HuggingFace cache).
+# Only one inference backend is ever up, so they share this one volume safely.
+[Unit]
+Description=Pac's Arcade models volume (inference weights)
+
+[Volume]
+VolumeName=models

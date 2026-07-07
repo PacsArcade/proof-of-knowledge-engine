@@ -1,0 +1,37 @@
+# DB-2: The Game State / the Blackboard (HOT). Live world + shared agent memory.
+# The init SQL builds the schema on first boot (empty data dir only).
+#
+# NOTE: config bind mounts assume the repo is checked out at
+#   ~/pacsarcade/knowledge-engine   (edit the %h/... paths if yours differs).
+[Unit]
+Description=Pac's Arcade — DB-2 postgres-gamestate (HOT, the Blackboard)
+
+[Container]
+ContainerName=postgres-gamestate
+Image=docker.io/library/postgres:16-alpine
+Network=hot.network
+PublishPort=5432:5432
+Volume=pgdata-gamestate.volume:/var/lib/postgresql/data
+Volume=%h/pacsarcade/knowledge-engine/infra/postgres/02-db2-gamestate.sql:/docker-entrypoint-initdb.d/02-db2-gamestate.sql:ro
+# App/PA_* vars (optional: '-' ignores a missing file, matching env_file required:false)
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+# The postgres image reads POSTGRES_*; keep these in sync with infra/.env PA_DB2_*.
+Environment=POSTGRES_USER=arcade
+Environment=POSTGRES_PASSWORD=change-me
+Environment=POSTGRES_DB=gamestate
+# --- Hardening (matches compose.yaml): rootless + no-new-privs + drop all caps.
+# The entrypoint steps down root -> 'postgres' inside the userns, which Podman
+# rootless permits with no caps. If yours needs it: AddCapability=SETUID SETGID.
+NoNewPrivileges=true
+DropCapability=all
+HealthCmd=pg_isready -U arcade -d gamestate
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=5
+HealthStartPeriod=20s
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

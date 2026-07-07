@@ -1,0 +1,8 @@
+# Pac's Arcade — WARM tier network (local GPU generation, first token < 300 ms).
+# Never leaves the box. inference + guardrail + orchestrator live here.
+[Unit]
+Description=Pac's Arcade WARM-tier network
+
+[Network]
+Driver=bridge
+NetworkName=pa-warm

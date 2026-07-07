@@ -1,0 +1,22 @@
+# state-sync: the translation API (HOT). Normalizes Luanti <-> MUD <-> DB-2.
+# Writes intents to the Blackboard and returns instantly — never waits on the GPU.
+# Image is built from services/state-sync (see quadlet/README.md "Build images").
+[Unit]
+Description=Pac's Arcade — state-sync (HOT translation API)
+Wants=postgres-gamestate.service
+After=postgres-gamestate.service
+
+[Container]
+ContainerName=state-sync
+Image=localhost/pacsarcade/state-sync:dev
+Network=hot.network
+PublishPort=8082:8082
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,9 @@
+# Pac's Arcade — COLD tier network (async, eventually-consistent). The ONLY tier
+# that ever crosses the network: Matrix federation, the BitTorrent corpus mesh,
+# and the (regtest!) Bitcoin node. MUST NEVER block gameplay.
+[Unit]
+Description=Pac's Arcade COLD-tier network
+
+[Network]
+Driver=bridge
+NetworkName=pa-cold

@@ -1,0 +1,23 @@
+# matrix-bridge: chat relay (COLD home, joins HOT to read live chat). Mirrors
+# MUD/Luanti in-world chat <-> Matrix rooms. Buffered/async — federation lag
+# never stalls the world.
+[Unit]
+Description=Pac's Arcade — matrix-bridge (chat relay)
+Wants=matrix.service
+After=matrix.service
+
+[Container]
+ContainerName=matrix-bridge
+Image=localhost/pacsarcade/matrix-bridge:dev
+Network=hot.network
+Network=cold.network
+PublishPort=8084:8084
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

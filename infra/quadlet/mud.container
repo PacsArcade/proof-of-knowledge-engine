@@ -1,0 +1,20 @@
+# mud: the text terminal (HOT). telnet/SSH + ANSI, the most accessible interface.
+[Unit]
+Description=Pac's Arcade — MUD text terminal (HOT)
+Wants=state-sync.service
+After=state-sync.service
+
+[Container]
+ContainerName=mud
+Image=localhost/pacsarcade/mud:dev
+Network=hot.network
+PublishPort=4000:4000
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

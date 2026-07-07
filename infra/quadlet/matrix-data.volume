@@ -1,0 +1,6 @@
+# Dendrite signing key (matrix_key.pem) + media (+ sqlite on a solo node).
+[Unit]
+Description=Pac's Arcade matrix-data volume (Dendrite keys + media)
+
+[Volume]
+VolumeName=matrix-data

@@ -1,0 +1,37 @@
+# inference (WARM): the local LLM endpoint. This unit runs the OLLAMA backend
+# (the node-wizard's default for small/solo nodes). ContainerName=inference, so
+# the rest of the stack reaches it at http://inference:11434/v1 on the warm net.
+#
+# --- Switch to vLLM? --------------------------------------------------------
+# Swap this unit's Image + add the server flags, and set
+# PA_INFERENCE_BASE_URL=http://inference:8000/v1 in infra/.env:
+#   Image=docker.io/vllm/vllm-openai:latest
+#   PublishPort=8000:8000
+#   Exec=--model ${PA_GEN_MODEL} --quantization awq --max-model-len 8192 \
+#        --gpu-memory-utilization 0.90 --port 8000
+#   Volume=models.volume:/root/.cache/huggingface
+# (See quadlet/README.md and infra/inference/vllm.md.)
+#
+# --- Rootless GPU via Podman CDI --------------------------------------------
+# Generate the spec once:  nvidia-ctk cdi generate --output=$HOME/.config/cdi/nvidia.yaml
+# Then AddDevice references it by name — no --gpus, no toolkit OCI hook.
+[Unit]
+Description=Pac's Arcade — inference (WARM, Ollama backend)
+
+[Container]
+ContainerName=inference
+Image=docker.io/ollama/ollama:latest
+Network=warm.network
+PublishPort=11434:11434
+AddDevice=nvidia.com/gpu=all
+Volume=models.volume:/root/.ollama
+Environment=OLLAMA_HOST=0.0.0.0:11434
+EnvironmentFile=-%h/pacsarcade/knowledge-engine/infra/.env
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

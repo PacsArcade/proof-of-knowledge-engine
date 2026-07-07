@@ -1,0 +1,10 @@
+# Pac's Arcade — HOT tier network (node-local, authoritative, < 50 ms).
+# Quadlet turns this into hot-network.service; containers that set
+# `Network=hot.network` pull it in automatically. Rootless bridge via netavark;
+# container-to-container name resolution via aardvark-dns (by ContainerName).
+[Unit]
+Description=Pac's Arcade HOT-tier network
+
+[Network]
+Driver=bridge
+NetworkName=pa-hot
