@@ -159,6 +159,51 @@
   .gatebox .btn{width:100%;padding:11px}
   #gate-note{color:var(--danger);font-size:12px;min-height:16px;margin-top:12px}
   .hint{color:var(--grey);font-size:11px;margin-top:14px;opacity:.7}
+  .hint.small{margin-top:8px;opacity:.55}
+  .hint code{color:var(--cyan);opacity:.9}
+
+  /* ---- system: per-core grid + meters ---- */
+  .core-grid{
+    display:grid; gap:8px; margin-bottom:14px;
+    grid-template-columns:repeat(auto-fill, minmax(58px,1fr));
+  }
+  .core{
+    position:relative; overflow:hidden; height:56px; padding:4px 5px;
+    border:1px solid var(--line); border-radius:8px; background:#060409;
+    display:flex; flex-direction:column; justify-content:flex-end;
+  }
+  .core > .fill{
+    position:absolute; left:0; right:0; bottom:0;
+    background:currentColor; opacity:.20; transition:height .45s ease;
+  }
+  .core > .lbl{position:relative; font-size:9px; letter-spacing:1px; color:var(--grey)}
+  .core > .pct{position:relative; font-size:12px; color:var(--ink); font-variant-numeric:tabular-nums}
+  .core.lo{color:var(--green)} .core.mid{color:var(--amber)} .core.hi{color:var(--danger)}
+  .core.hi > .pct{color:var(--danger)}
+
+  .meter-label{display:flex; justify-content:space-between; gap:8px; font-size:11px; color:var(--grey); margin-bottom:4px}
+  .meter{
+    height:14px; border:1px solid var(--line); border-radius:7px;
+    background:#060409; overflow:hidden;
+  }
+  .meter > i{
+    display:block; height:100%; width:0;
+    background:linear-gradient(90deg,var(--cyan),var(--mag)); transition:width .45s ease;
+  }
+
+  /* ---- relays ---- */
+  .relay-row{display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px dashed rgba(255,255,255,.06)}
+  .relay-row:last-child{border-bottom:0}
+  .relay-main{flex:1; min-width:0}
+  .relay-name{color:var(--ink)}
+  .relay-ref{color:var(--grey); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+
+  /* ---- torrent swarms ---- */
+  .swarm-row{padding:10px 0; border-bottom:1px dashed rgba(255,255,255,.06)}
+  .swarm-row:last-child{border-bottom:0}
+  .swarm-head{display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap}
+  .swarm-id{color:var(--ink); font-weight:600}
+  .head-stats{margin-left:auto; letter-spacing:0; color:var(--grey); font-size:11px; display:flex; align-items:center; gap:6px; flex-wrap:wrap}
 </style>
 
 <!-- ============ TOKEN GATE ============ -->
@@ -170,6 +215,7 @@
     <button class="btn mag" id="gate-connect">Connect 💜</button>
     <div id="gate-note"></div>
     <div class="hint">Copy the token the server printed at startup.</div>
+    <div class="hint small">Find the token in your server console (the <code>admin token:</code> line), or set <code>PA_ADMIN_TOKEN</code>.</div>
   </div>
 </div>
 
@@ -227,6 +273,44 @@
       <h2><span class="accent">▸</span> Players <span class="count" id="players-count"></span></h2>
       <div class="body" id="players-body"><span class="muted">loading…</span></div>
     </section>
+
+    <!-- SYSTEM -->
+    <section class="card wide">
+      <h2><span class="accent">▸</span> System <span class="count head-stats" id="sys-head"></span></h2>
+      <div class="body" id="sys-body"><span class="muted">loading…</span></div>
+    </section>
+
+    <!-- KNOWLEDGE RELAYS -->
+    <section class="card">
+      <h2><span class="accent">▸</span> Knowledge Relays <span class="count" id="relays-count"></span></h2>
+      <div class="body">
+        <div id="relays-list"><span class="muted">loading…</span></div>
+        <div class="ctl" style="margin-top:14px">
+          <label>Name</label>
+          <input type="text" id="relay-name" placeholder="verse name">
+        </div>
+        <div class="ctl">
+          <label>Ref</label>
+          <input type="text" id="relay-ref" placeholder="magnet / infohash / npub">
+        </div>
+        <div class="ctl-row">
+          <button class="btn mag" id="relay-add">+ Subscribe to a verse</button>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:8px">Subscribe to whatever verses you want to see — like nostr relays. Their group knowledge stays synced over torrent.</div>
+      </div>
+    </section>
+
+    <!-- TORRENT -->
+    <section class="card wide">
+      <h2><span class="accent">▸</span> Torrent <span class="count head-stats" id="torrent-head"></span></h2>
+      <div class="body">
+        <div id="torrent-list"><span class="muted">loading…</span></div>
+        <div class="ctl-row" style="margin-top:12px">
+          <button class="btn" id="torrent-pause-all">Pause all</button>
+          <button class="btn amber" id="torrent-resume-all">Resume all</button>
+        </div>
+      </div>
+    </section>
   </div>
 </main>
 
@@ -253,6 +337,12 @@
     const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
     if(h) return `${h}h ${m}m`;
     return `${m}m ${String(s).padStart(2,"0")}s`;
+  }
+  const clamp = (n,lo,hi) => Math.max(lo, Math.min(hi, Number(n)||0));
+  function fmtMB(mb){
+    mb = Number(mb)||0;
+    if(mb >= 1024) return (mb/1024).toFixed(1) + " GB";
+    return Math.round(mb) + " MB";
   }
 
   /* ---------- auth / gate ---------- */
@@ -392,6 +482,116 @@
     $("swarm-body").innerHTML = rows.join("");
   }
 
+  /* ---------- render: SYSTEM (cpu/mem grid) ---------- */
+  function renderSystem(sys){
+    if(!sys || sys.available === false){
+      const reason = (sys && sys.reason) ? sys.reason : "unavailable";
+      $("sys-head").textContent = "";
+      $("sys-body").innerHTML = `<div class="muted">metrics unavailable — ${esc(reason)}</div>`;
+      return;
+    }
+    const cpu = clamp(sys.cpu_percent, 0, 100);
+    const coreN = (sys.cores!=null) ? esc(sys.cores) : "";
+    $("sys-head").innerHTML =
+      `<span style="color:var(--green)">${cpu.toFixed(1)}%</span> cpu` +
+      (coreN!=="" ? ` · ${coreN} cores` : "") +
+      ` · up ${fmtShort(sys.uptime_s)}`;
+
+    const perCore = Array.isArray(sys.per_core) ? sys.per_core : [];
+    const aggregate = !perCore.length;
+    const cells = (aggregate ? [cpu] : perCore).map((v,i) => {
+      const p = clamp(v, 0, 100);
+      const cls = p < 50 ? "lo" : p < 80 ? "mid" : "hi";
+      const label = aggregate ? "CPU" : ("c" + i);
+      return `<div class="core ${cls}">
+        <span class="fill" style="height:${p.toFixed(0)}%"></span>
+        <span class="lbl">${label}</span>
+        <span class="pct">${p.toFixed(0)}%</span>
+      </div>`;
+    }).join("");
+
+    const memUsed = Number(sys.mem_used_mb)||0;
+    const memTot = Number(sys.mem_total_mb)||0;
+    const memPct = (sys.mem_percent!=null) ? clamp(sys.mem_percent,0,100)
+                 : (memTot ? clamp(memUsed/memTot*100,0,100) : 0);
+    $("sys-body").innerHTML = `
+      <div class="core-grid">${cells}</div>
+      <div class="meter-label"><span>Memory</span><span>${fmtMB(memUsed)} / ${fmtMB(memTot)} · ${memPct.toFixed(0)}%</span></div>
+      <div class="meter"><i style="width:${memPct.toFixed(1)}%"></i></div>`;
+  }
+
+  /* ---------- render: KNOWLEDGE RELAYS ---------- */
+  function renderRelays(data){
+    const relays = (data && Array.isArray(data.relays)) ? data.relays : [];
+    const count = (data && data.count!=null) ? data.count : relays.length;
+    $("relays-count").textContent = `(${count})`;
+    if(!relays.length){
+      $("relays-list").innerHTML = `<span class="muted">no verses subscribed yet</span>`;
+      return;
+    }
+    $("relays-list").innerHTML = relays.map(r => {
+      const name = esc(r.name || "?");
+      const kind = esc(r.kind || "verse");
+      const ref = String(r.ref==null ? "" : r.ref);
+      const refShort = ref.length > 46 ? ref.slice(0,44) + "…" : (ref || "—");
+      const on = !!r.enabled;
+      return `<div class="relay-row">
+        <div class="relay-main">
+          <div class="relay-name">${name} <span class="pill good">${kind}</span></div>
+          <div class="relay-ref" title="${esc(ref)}">${esc(refShort)}</div>
+        </div>
+        <button class="btn toggle-btn" data-relay-toggle="${name}" data-enabled="${on?1:0}"
+          style="color:${on?"var(--green)":"var(--grey)"};border-color:${on?"var(--green)":"var(--line)"}">${on?"ON":"OFF"}</button>
+        <button class="btn danger" data-relay-remove="${name}" title="unsubscribe">✕</button>
+      </div>`;
+    }).join("");
+  }
+
+  /* ---------- render: TORRENT ---------- */
+  function renderTorrent(data){
+    if(!data){
+      $("torrent-head").textContent = "";
+      $("torrent-list").innerHTML = `<div class="muted">torrent unavailable</div>`;
+      return;
+    }
+    const g = data.global || {};
+    const swarms = Array.isArray(data.swarms) ? data.swarms : [];
+    const nSwarms = (g.num_swarms!=null) ? g.num_swarms : swarms.length;
+    $("torrent-head").innerHTML =
+      `<span style="color:var(--green)">↓${Number(g.down_kbps)||0}</span> ` +
+      `<span style="color:var(--mag)">↑${Number(g.up_kbps)||0}</span> kbps · ` +
+      `:${g.port!=null?esc(g.port):"—"} ` +
+      `<span class="pill ${g.dht?"good":"off"}">DHT ${g.dht?"on":"off"}</span> ` +
+      `<span>${esc(nSwarms)} swarms</span>`;
+
+    if(!swarms.length){
+      $("torrent-list").innerHTML = `<span class="muted">no active swarms</span>`;
+      return;
+    }
+    $("torrent-list").innerHTML = swarms.map(s => {
+      const id = String(s.corpus_id==null ? "?" : s.corpus_id);
+      const prog = clamp(s.progress, 0, 1);
+      const paused = !!s.paused;
+      const verified = !!s.verified;
+      const cached = (s.cached!=null) ? esc(s.cached) : "?";
+      const total = (s.total!=null) ? esc(s.total) : "?";
+      return `<div class="swarm-row">
+        <div class="swarm-head">
+          <span class="swarm-id">${esc(id)}</span>
+          <span class="pill ${verified?"good":"bad"}">${verified?"verified":"UNVERIFIED"}</span>
+          ${paused?'<span class="pill off">paused</span>':""}
+          <span class="head-stats">${Number(s.peers)||0} peers · ${Number(s.seeds)||0} seeds</span>
+        </div>
+        <div class="meter-label"><span>${cached}/${total} shards</span><span>${(prog*100).toFixed(0)}%</span></div>
+        <div class="meter"><i style="width:${(prog*100).toFixed(1)}%"></i></div>
+        <div class="ctl-row" style="margin-top:8px">
+          <button class="btn" data-torrent="${paused?"resume":"pause"}" data-corpus="${esc(id)}">${paused?"Resume":"Pause"}</button>
+          <button class="btn amber" data-torrent="reannounce" data-corpus="${esc(id)}">Re-announce</button>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
   /* ---------- controls: chat toggle ---------- */
   function updateChatToggle(){
     const b = $("chat-toggle");
@@ -429,13 +629,19 @@
     if(inFlight) return;
     inFlight = true;
     try{
-      const [stats, nodes] = await Promise.all([
+      const [stats, nodes, sys, relays, torrent] = await Promise.all([
         apiGet("/stats"),
-        apiGet("/nodes").catch(e => { if(e instanceof AuthError) throw e; return { online:false, reason:"nodes endpoint unreachable" }; })
+        apiGet("/nodes").catch(e => { if(e instanceof AuthError) throw e; return { online:false, reason:"nodes endpoint unreachable" }; }),
+        apiGet("/system").catch(e => { if(e instanceof AuthError) throw e; return { available:false, reason:"system endpoint unreachable" }; }),
+        apiGet("/relays").catch(e => { if(e instanceof AuthError) throw e; return { relays:[], count:0 }; }),
+        apiGet("/torrent").catch(e => { if(e instanceof AuthError) throw e; return null; })
       ]);
       renderNode(stats);
       renderPlayers(stats);
       renderSwarm(nodes);
+      renderSystem(sys);
+      renderRelays(relays);
+      renderTorrent(torrent);
       setConn("ok", "live · refreshing every 5s");
     }catch(e){
       if(e instanceof AuthError){ on401(); return; }
@@ -488,6 +694,41 @@
       if(confirm("SHUTDOWN the node? This stops the MUD entirely. Are you sure?"))
         doAction("shutdown", "/shutdown", {});
     });
+
+    /* relays: subscribe */
+    $("relay-add").addEventListener("click", () => {
+      const name = $("relay-name").value.trim();
+      const ref = $("relay-ref").value.trim();
+      if(!name || !ref){ log("subscribe", "name and ref required", true); return; }
+      doAction("subscribe " + name, "/relays", { name, ref, kind:"verse" });
+      $("relay-name").value = ""; $("relay-ref").value = "";
+    });
+    $("relay-ref").addEventListener("keydown", e => { if(e.key==="Enter") $("relay-add").click(); });
+
+    /* relays: toggle / remove (delegated — rows are re-rendered) */
+    $("relays-list").addEventListener("click", e => {
+      const b = e.target.closest("button"); if(!b) return;
+      if(b.dataset.relayToggle != null){
+        const name = b.dataset.relayToggle;
+        const enabled = b.dataset.enabled !== "1";
+        doAction((enabled?"enable ":"disable ") + name, "/relays/toggle", { name, enabled });
+      } else if(b.dataset.relayRemove != null){
+        const name = b.dataset.relayRemove;
+        if(confirm(`Unsubscribe from verse "${name}"?`))
+          doAction("remove " + name, "/relays/remove", { name });
+      }
+    });
+
+    /* torrent: per-swarm controls (delegated) */
+    $("torrent-list").addEventListener("click", e => {
+      const b = e.target.closest("button"); if(!b || !b.dataset.torrent) return;
+      const action = b.dataset.torrent, corpus_id = b.dataset.corpus;
+      doAction(action + " " + corpus_id, "/torrent", { action, corpus_id });
+    });
+    $("torrent-pause-all").addEventListener("click", () => {
+      if(confirm("Pause ALL swarms?")) doAction("pause all", "/torrent", { action:"pause" });
+    });
+    $("torrent-resume-all").addEventListener("click", () => doAction("resume all", "/torrent", { action:"resume" }));
   }
 
   /* ---------- boot ---------- */

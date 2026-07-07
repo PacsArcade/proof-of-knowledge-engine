@@ -99,10 +99,11 @@ def c(color: str, s: str) -> str:
 def make_banner() -> str:
     lines = [
         "",
-        "PAC'S  ARCADE   presents",
+        "PAC'S  ARCADE",
+        "presents",
         "",
         "◆  P . O . K . E .  ◆",
-        "the Proof of Knowledge Engine",
+        "Proof of Knowledge Engine",
         "",
         "play to learn  ·  type  help  ·  quit  to leave",
         "",
@@ -110,7 +111,14 @@ def make_banner() -> str:
     width = max(len(l) for l in lines) + 8
     out = [c(MAG, "╔" + "═" * width + "╗")]
     for i, ln in enumerate(lines):
-        col = BOLD + GOLD if "P . O . K . E" in ln else (BOLD + AMBER if "PAC'S" in ln else GREY)
+        if "P . O . K . E" in ln:
+            col = BOLD + GOLD
+        elif "PAC'S" in ln:
+            col = BOLD + AMBER
+        elif "Proof of Knowledge" in ln:
+            col = AMBER
+        else:
+            col = GREY
         out.append(c(MAG, "║") + c(col, ln.center(width)) + c(MAG, "║"))
     out.append(c(MAG, "╚" + "═" * width + "╝"))
     return "\n" + "\n".join(out) + "\n" + c(GREY, "  Welcome, fren. 💜") + "\n"
@@ -124,15 +132,16 @@ HELP_LINES = [
     "  look (l)              look around the room",
     "  north/south/east/west go through a door  (also n/s/e/w)",
     "  talk oracle           speak with the Oracle (it asks; you answer)",
-    "  answer <text>         answer the Oracle   ·   ask oracle <q>",
+    "  answer <text>         answer the Oracle or a boss  ·  ask oracle <q>",
+    "  challenge             face the boss (the dungeon is  down  from entrance)",
     "  pull lever            operate a feature in the room",
+    "  stats                 your attributes  ·  examine <name>  see a fren",
     "  link fren <name>      claim your @fren + get a code to link it",
-    "  verify <code>         confirm your @fren from frens.earth",
-    "  backup                anchor your progress + runes on-chain",
+    "  verify <code> · backup  confirm your @fren · anchor progress on-chain",
     "  profile · certs · inventory · who · say <msg>",
     "",
-    "  Doors are the gaps in the frame:  up / down / left / right arrows.",
-    "  The Oracle trades understanding for a soulbound rune.",
+    "  You don't have to be exact — just type naturally. 'sup' to the Oracle,",
+    "  'go down', 'who's the boss' all work. The game figures it out.",
 ]
 
 
@@ -153,15 +162,30 @@ ROOM_ART = {
         "     | [#]     ()  |   a sealed chest, banded in gold",
         "     '------------'",
     ],
+    "dungeon": [
+        "        .-~~~-.",
+        "      /  x   x  \\    something flickers between two places",
+        "      \\   \\_/   /    — here, and not-here",
+        "        '-...-'",
+    ],
 }
 
 ROOMS = {
     "entrance": {
         "title": "The Arcade Entrance",
         "desc": ("CRT cabinets hum in the dark, throwing blue light across the carpet. A neon sign "
-                 "buzzes: PAC'S ARCADE — KNOWLEDGE IS THE HIGH SCORE. A worn token-slot glows, waiting."),
-        "exits": {"north": "alcove", "east": "vault"},
+                 "buzzes: PAC'S ARCADE — KNOWLEDGE IS THE HIGH SCORE. A worn token-slot glows, waiting. "
+                 "A stairwell descends into a cold blue glow."),
+        "exits": {"north": "alcove", "east": "vault", "down": "dungeon"},
         "npcs": [],
+    },
+    "dungeon": {
+        "title": "The Proof Dungeon",
+        "desc": ("Down here the hum turns to a drone. Something vast and half-real coils in the dark, "
+                 "flickering between two places at once. It has been trying to spend the same coin "
+                 "twice since before you were born. Type  challenge  to face it."),
+        "exits": {"up": "entrance"},
+        "npcs": ["wraith"],
     },
     "alcove": {
         "title": "The Oracle's Alcove",
@@ -210,7 +234,11 @@ class Player:
         self.space = None
         self.fren_tag = None
         self.frens_code = None             # pending @fren pairing code
+        self.xp = 0
+        self.level = 1
+        self.energy = 100
         self.oracle_pending = False
+        self.boss_pending = None           # boss id awaiting an answer
         self.focus: dict | None = None     # the window's current panel {title, lines, color}
         self.log: list[str] = []           # message-log strip (transient lines)
         self.connected_at = time.time()
@@ -240,7 +268,8 @@ def focus_room(p: Player) -> None:
     lines += _wrap(room["desc"], BOARD_W - 4)
     lines.append("")
     if room["npcs"]:
-        lines.append("Here: " + ", ".join(n.title() for n in room["npcs"]) + "   (try 'talk oracle')")
+        hint = "(type 'challenge')" if "wraith" in room["npcs"] else "(try 'talk oracle')"
+        lines.append("Here: " + ", ".join(n.title() for n in room["npcs"]) + "   " + hint)
     others = [pl.name for w, pl in PLAYERS.items() if pl.room == p.room and pl is not p]
     if others:
         lines.append("Also here: " + ", ".join(others))
@@ -288,10 +317,12 @@ def render_screen(p: Player) -> str:
     f = p.focus or {"title": room["title"], "lines": [], "color": GREEN}
     who = f"@{p.fren_tag}" if p.fren_tag else p.name
     header = c(BOLD + MAG, "  PAC'S ARCADE · P.O.K.E.") + c(GREY, f"      {who} · {room['title']}")
+    hud = ("  " + c(GOLD, f"⭐ Lv {p.level}") + c(GREY, " · ") + c(CYAN, f"✦ {p.xp} xp")
+           + c(GREY, " · ") + c(GOLD, f"🎓 {len(p.certs)}") + c(GREY, " · ") + c(GREEN, f"⚡ {p.energy}"))
     frame = _frame(f["title"], f["lines"], room["exits"], f.get("color", GREEN))
     log = list(p.log)[-LOG_H:]
     log = [""] * (LOG_H - len(log)) + log            # bottom-align the log
-    parts = [header, ""] + frame + ["", c(GREY, "  ── messages ──")]
+    parts = [header, hud, ""] + frame + ["", c(GREY, "  ── messages ──")]
     parts += ["  " + l for l in log]
     parts += ["", c(AMBER, f"  {who} ") + c(GREY, "» ")]
     out = HOME
@@ -406,9 +437,10 @@ async def etch_class_rune(p: Player, spec: dict) -> None:
         STORE.etch_certificate, p.name, spec["class_id"], spec["rune"], spec["title"], p.wallet, block
     )
     p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+    res = await asyncio.to_thread(STORE.add_xp, p.name, 100); p.xp, p.level = res["xp"], res["level"]
     await animate(p, RUNE_ANIM, "Etching a rune…", GOLD, hold=0.6)
     focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
-    push(p, c(GOLD, f"🎓 etched {spec['rune']}"))
+    push(p, c(GOLD, f"🎓 etched {spec['rune']}  (+100 xp)"))
 
 
 # --- identity: @fren / nostr / spaces, pairing code, on-chain backup ---------
@@ -768,6 +800,13 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, stats_json())
         elif path == "/nodes":
             self._reply(200, self._run(get_swarm_status(True)))
+        elif path == "/system":
+            self._reply(200, system_metrics())
+        elif path == "/relays":
+            rl = _load_relays()
+            self._reply(200, {"relays": rl, "count": len(rl)})
+        elif path == "/torrent":
+            self._reply(200, torrent_status())
         else:
             self._reply(404, {"error": "not found"})
 
@@ -792,6 +831,18 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         elif path == "/shutdown":
             self._run(op_shutdown("web-admin shutdown", reboot=False), timeout=2)
             self._reply(200, {"ok": True, "result": "shutting down"})
+        elif path == "/relays":
+            self._reply(200, {"ok": True, "result": relays_add(
+                str(data.get("name", "")).strip(), str(data.get("ref", "")).strip(),
+                data.get("kind", "verse"), data.get("pubkey"))})
+        elif path == "/relays/remove":
+            self._reply(200, {"ok": True, "result": relays_remove(str(data.get("name", "")).strip())})
+        elif path == "/relays/toggle":
+            self._reply(200, {"ok": True, "result": relays_toggle(
+                str(data.get("name", "")).strip(), bool(data.get("enabled")))})
+        elif path == "/torrent":
+            self._reply(200, {"ok": True, "result": torrent_control(
+                str(data.get("action", "status")), data.get("corpus_id"))})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -838,6 +889,377 @@ async def admin_command(p: Player, rest: str) -> None:
         push(p, c(GREY, "admin: stats | nodes | broadcast <m> | kick <n> | chat on|off | reboot | shutdown"))
 
 
+# =============================================================================
+# The boss — an animated encounter with a question gate and a reward.
+# =============================================================================
+WRAITH = {
+    "id": "wraith",
+    "name": "The Double-Spend Wraith",
+    "class": {"class_id": "consensus", "rune": "PACS•CONSENSUS", "title": "Bitcoin Consensus 101"},
+    "question": ("\"I am one coin, spent twice. I split the ledger and feast on the confusion. Name the "
+                 "mechanism that forces the whole network to agree on ONE history — and I unravel.\""),
+    "keys": ("proof of work", "proof-of-work", "pow", "mining", "miners", "longest chain",
+             "heaviest chain", "most work", "confirmation", "consensus", "nakamoto", "hash"),
+    "xp": 150,
+}
+WRAITH_ANIM = [
+    ["", "", "        .-~~~-.   .-~~~-.", "      /  x  x  \\ /  x  x  \\    it is in two places at once…",
+     "      \\   ^   / \\   ^   /", "        '-...-'   '-...-'", "", ""],
+    ["", "", "           .-~~~-.", "         /  X   X  \\     \"which history is TRUE?\"", "         \\   >   /",
+     "           '-...-'", "", ""],
+]
+WRAITH_DEFEAT = [
+    ["", "", "           .-~~~-.", "         /  x   x  \\     the forks collapse toward one…", "         \\   _   /",
+     "           '-...-'", "", ""],
+    ["", "", "            \\   |   /", "          ——  one chain  ——     the Wraith unravels.", "            /   |   \\", "", "", ""],
+]
+
+
+async def boss_open(p: Player) -> None:
+    p.boss_pending = WRAITH["id"]
+    await animate(p, WRAITH_ANIM, WRAITH["name"], RED, hold=0.7)
+    focus_text(p, WRAITH["name"], ["", "  " + WRAITH["name"] + " rounds on you.", ""]
+               + ["  " + l for l in _wrap(WRAITH["question"], BOARD_W - 6)]
+               + ["", "  (answer with:  answer <your words>)"], RED)
+
+
+async def boss_judge(p: Player, ans: str) -> None:
+    if any(k in ans.lower() for k in WRAITH["keys"]):
+        p.boss_pending = None
+        await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " — defeated", GOLD, hold=0.7)
+        res = await asyncio.to_thread(STORE.add_xp, p.name, WRAITH["xp"]); p.xp, p.level = res["xp"], res["level"]
+        p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, 20)
+        push(p, c(GOLD, f"⚔ the Wraith unravels — +{WRAITH['xp']} xp"))
+        if not await asyncio.to_thread(STORE.has_certificate, p.name, WRAITH["class"]["class_id"]):
+            await etch_class_rune(p, WRAITH["class"])
+        else:
+            focus_text(p, "Victory", ["", "  The Double-Spend Wraith is undone.", "",
+                                      "  Proof-of-work is what makes bitcoin's history single and settled —",
+                                      "  rewriting it means out-working the whole network. You knew it. 💜"], GOLD)
+    else:
+        p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, -15)
+        p.boss_pending = WRAITH["id"]
+        focus_text(p, WRAITH["name"], ["", "  The Wraith laughs and splits again.  (-15 ⚡)", "",
+                                       "  Think: what does a miner burn to extend the chain, making a",
+                                       "  rewrite absurdly expensive?   answer <text>"], RED)
+
+
+# =============================================================================
+# Attributes & examine — a player's stats, and viewing another fren's.
+# =============================================================================
+async def show_attributes(p: Player) -> None:
+    into = p.xp % 100
+    bar = "█" * (into // 10) + "░" * (10 - into // 10)
+    focus_text(p, "Your attributes", [
+        "",
+        f"  Level     : {p.level}",
+        f"  Knowledge : {p.xp} xp    [{bar}]   {100 - into} to level {p.level + 1}",
+        f"  Runes     : {len(p.certs)} soulbound",
+        f"  Energy    : {p.energy}/100",
+        f"  @fren     : {('@' + p.fren_tag) if p.fren_tag else 'unlinked  (link fren <name>)'}",
+        "",
+        "  Earn xp from the Oracle and by defeating bosses.",
+        "  The dungeon is  down  from the entrance.  See a fren:  examine <name>",
+    ], CYAN)
+
+
+async def examine(p: Player, name: str) -> None:
+    name = name.strip()
+    if not name:
+        push(p, c(GREY, "examine whom?  examine <name>")); return
+    a = await asyncio.to_thread(STORE.public_attributes, name)
+    if not a:
+        push(p, c(GREY, f"no fren called '{name}' is known here")); return
+    who = ("@" + a["fren_tag"]) if a["fren_tag"] else a["name"]
+    online = any(pl.name == a["name"] for pl in PLAYERS.values())
+    focus_text(p, who, [
+        "",
+        f"  {who}   {'· here now' if online else '· not currently online'}",
+        f"  Level     : {a['level']}",
+        f"  Knowledge : {a['xp']} xp",
+        f"  Runes     : {a['runes']} soulbound",
+        f"  Energy    : {a['energy']}/100",
+        f"  Last seen : {a['room']}",
+    ], AMBER)
+
+
+# =============================================================================
+# Flexible input — a fast path (no LLM, zero lag) + an LLM/heuristic fuzzy path.
+# The local model only runs on free text; exact commands never touch it. All the
+# player's turns are stored in DB-2 so the world remembers them cheaply.
+# =============================================================================
+GREETINGS = {"sup", "hi", "hey", "hello", "yo", "greetings", "howdy", "hiya", "wassup",
+             "whatsup", "what's up", "whats up", "ahoy", "oi"}
+
+
+def _chat(messages: list[dict], max_tokens: int) -> str:
+    try:
+        body = json.dumps({"model": GEN_MODEL, "messages": messages,
+                           "max_tokens": max_tokens, "temperature": 0.7}).encode()
+        req = urllib.request.Request(INFERENCE_BASE_URL.rstrip("/") + "/chat/completions",
+                                     data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read())["choices"][0]["message"]["content"]
+    except Exception:
+        return ""
+
+
+def _llm_oracle(text: str, mem: list[dict]) -> str:
+    msgs = [{"role": "system", "content":
+             "You are the Oracle at Pac's Arcade — a Socratic bitcoin/nostr educator in a MUD. Say 'fren', "
+             "never 'friend'. Reply in 1-3 warm sentences and end with a probing question. Never lecture."}]
+    for m in mem:
+        msgs.append({"role": "assistant" if m["role"] == "game" else "user", "content": m["text"]})
+    msgs.append({"role": "user", "content": text})
+    return _chat(msgs, 140)
+
+
+async def converse_oracle(p: Player, text: str) -> None:
+    """Free-form chat with the Oracle. Tiny context (recent memory only), stored in DB-2."""
+    await asyncio.to_thread(STORE.add_memory, p.name, "player", text)
+    focus_text(p, "The Oracle", _oracle_panel(["…the Oracle considers…"]), MAG)
+    await show(p)
+    reply = ""
+    if INFERENCE_BASE_URL and GEN_MODEL:
+        mem = await asyncio.to_thread(STORE.recent_memory, p.name, 6)
+        reply = await asyncio.get_event_loop().run_in_executor(None, _llm_oracle, text, mem)
+    if not reply:
+        reply = ("I trade in questions, not chit-chat, fren — but I'm listening. Ask me something real about "
+                 "bitcoin or nostr, or say 'talk oracle' to begin the trial. What's on your mind?")
+    await asyncio.to_thread(STORE.add_memory, p.name, "game", reply)
+    focus_text(p, "The Oracle", _oracle_panel(_wrap('"' + reply.strip() + '"', BOARD_W - 6)), MAG)
+
+
+def _llm_intent(room_title: str, exits: list, npcs: list, line: str) -> dict | None:
+    sysmsg = ("Translate the player's text into ONE game action in a MUD. Reply ONLY compact JSON, no prose. "
+              "Options: {\"action\":\"move\",\"dir\":\"north|south|east|west|up|down\"} | {\"action\":\"talk\"} | "
+              "{\"action\":\"look\"} | {\"action\":\"pull\"} | {\"action\":\"challenge\"} | {\"action\":\"backup\"} | "
+              "{\"action\":\"profile\"} | {\"action\":\"certs\"} | {\"action\":\"none\",\"reply\":\"<short in-character line>\"}. "
+              f"Room: {room_title}. Exits: {exits}. NPCs here: {npcs}.")
+    out = _chat([{"role": "system", "content": sysmsg}, {"role": "user", "content": line}], 60)
+    try:
+        return json.loads(out[out.find("{"):out.rfind("}") + 1])
+    except Exception:
+        return None
+
+
+async def apply_intent(p: Player, act: dict) -> bool:
+    a = (act.get("action") or "").lower()
+    npcs = ROOMS[p.room]["npcs"]
+    if a == "move" and act.get("dir"):
+        await move(p, act["dir"]); return True
+    if a == "talk":
+        if "oracle" in npcs:
+            await oracle_open(p); return True
+        if "wraith" in npcs:
+            await boss_open(p); return True
+    if a == "look":
+        focus_room(p); return True
+    if a == "pull":
+        await pull(p, "lever"); return True
+    if a == "challenge" and "wraith" in npcs:
+        await boss_open(p); return True
+    if a == "backup":
+        await backup_onchain(p); return True
+    if a == "profile":
+        await show_profile(p); return True
+    if a == "certs":
+        await show_certs(p); return True
+    if a == "none" and act.get("reply"):
+        push(p, c(MAG, str(act["reply"])[:200])); return True
+    return False
+
+
+async def interpret(p: Player, line: str) -> None:
+    """The fuzzy path: only reached when no exact command matched. Heuristics first (instant),
+    NPC conversation second, the local LLM last — so lag only ever happens on true free text."""
+    low = line.lower().strip()
+    npcs = ROOMS[p.room]["npcs"]
+    await asyncio.to_thread(STORE.add_memory, p.name, "player", line)
+    if any(low == g or low.startswith(g + " ") for g in GREETINGS):
+        if "oracle" in npcs:
+            await oracle_open(p); return
+        if "wraith" in npcs:
+            await boss_open(p); return
+        push(p, c(GREY, "you say it to the empty room; the cabinets blink back")); return
+    for d in DIRS:
+        if d in low.split():
+            await move(p, d); return
+    if low in ("where am i", "look around", "explore", "wat", "what"):
+        focus_room(p); return
+    if "oracle" in npcs:                       # in the Alcove, free text IS a question to the Oracle
+        await converse_oracle(p, line); return
+    if INFERENCE_BASE_URL and GEN_MODEL:       # elsewhere, let the model map intent (only cost when needed)
+        room = ROOMS[p.room]
+        act = await asyncio.get_event_loop().run_in_executor(
+            None, _llm_intent, room["title"], list(room["exits"]), npcs, line)
+        if act and await apply_intent(p, act):
+            return
+    push(p, c(GREY, f"hmm — not sure what '{line}' does here. Try  help, or talk to someone."))
+
+
+# --- system / relays / torrent metrics for the web console rails -------------
+def _linux_metrics() -> dict:
+    with open("/proc/meminfo") as f:
+        mi = {ln.split(":")[0]: int(ln.split()[1]) for ln in f}
+    total_kb = mi.get("MemTotal", 0)
+    avail_kb = mi.get("MemAvailable", mi.get("MemFree", 0))
+    total_mb, used_mb = total_kb // 1024, (total_kb - avail_kb) // 1024
+
+    def snap():
+        agg, cores = None, []
+        with open("/proc/stat") as f:
+            for ln in f:
+                if not ln.startswith("cpu"):
+                    break
+                parts = ln.split(); vals = list(map(int, parts[1:]))
+                idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+                pair = (idle, sum(vals))
+                if parts[0] == "cpu":
+                    agg = pair
+                else:
+                    cores.append(pair)
+        return agg, cores
+
+    a1, c1 = snap(); time.sleep(0.1); a2, c2 = snap()
+
+    def pct(x, y):
+        di, dt = y[0] - x[0], y[1] - x[1]
+        return round((1 - di / dt) * 100, 1) if dt > 0 else 0.0
+
+    per = [pct(c1[i], c2[i]) for i in range(min(len(c1), len(c2)))]
+    return {"available": True, "cpu_percent": pct(a1, a2), "cores": len(per) or (os.cpu_count() or 1),
+            "per_core": per, "mem_used_mb": used_mb, "mem_total_mb": total_mb,
+            "mem_percent": round(used_mb / total_mb * 100, 1) if total_mb else 0.0,
+            "uptime_s": int(time.time() - SERVER_START)}
+
+
+def _win_metrics() -> dict:
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.windll.kernel32
+
+    class MEMSTAT(ctypes.Structure):
+        _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+    ms = MEMSTAT(); ms.dwLength = ctypes.sizeof(MEMSTAT); k.GlobalMemoryStatusEx(ctypes.byref(ms))
+    total_mb = ms.ullTotalPhys // (1024 * 1024)
+    used_mb = (ms.ullTotalPhys - ms.ullAvailPhys) // (1024 * 1024)
+
+    def times():
+        idle, kern, usr = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+        k.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kern), ctypes.byref(usr))
+        q = lambda ft: (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+        return q(idle), q(kern) + q(usr)
+
+    i1, t1 = times(); time.sleep(0.1); i2, t2 = times()
+    dt, di = t2 - t1, i2 - i1
+    cpu = round((1 - di / dt) * 100, 1) if dt > 0 else 0.0
+    return {"available": True, "cpu_percent": cpu, "cores": os.cpu_count() or 1, "per_core": [],
+            "mem_used_mb": used_mb, "mem_total_mb": total_mb, "mem_percent": ms.dwMemoryLoad,
+            "uptime_s": int(time.time() - SERVER_START)}
+
+
+def system_metrics() -> dict:
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        per = psutil.cpu_percent(percpu=True)
+        return {"available": True, "cpu_percent": round(sum(per) / len(per), 1) if per else 0.0,
+                "cores": psutil.cpu_count() or len(per), "per_core": [round(x, 1) for x in per],
+                "mem_used_mb": (vm.total - vm.available) // (1024 * 1024),
+                "mem_total_mb": vm.total // (1024 * 1024), "mem_percent": vm.percent,
+                "uptime_s": int(time.time() - SERVER_START)}
+    except Exception:
+        pass
+    try:
+        if sys.platform.startswith("linux"):
+            return _linux_metrics()
+        if sys.platform == "win32":
+            return _win_metrics()
+    except Exception as e:
+        return {"available": False, "reason": f"metrics error ({e.__class__.__name__})"}
+    return {"available": False, "reason": "no metrics backend (pip install psutil)"}
+
+
+RELAYS_FILE = os.environ.get("PA_RELAYS_FILE", os.path.join("data", "relays.json"))
+
+
+def _load_relays() -> list:
+    try:
+        with open(RELAYS_FILE) as f:
+            return json.load(f).get("relays", [])
+    except Exception:
+        return []
+
+
+def _save_relays(relays: list) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(RELAYS_FILE)), exist_ok=True)
+    with open(RELAYS_FILE, "w") as f:
+        json.dump({"relays": relays}, f, indent=2)
+
+
+def relays_add(name: str, ref: str, kind: str = "verse", pubkey=None) -> str:
+    if not name or not ref:
+        return "need a name and a ref (magnet/infohash/npub)"
+    relays = [r for r in _load_relays() if r.get("name") != name]
+    relays.append({"name": name, "ref": ref, "pubkey": pubkey, "kind": kind, "enabled": True,
+                   "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    _save_relays(relays)
+    return f"subscribed to verse '{name}'"
+
+
+def relays_remove(name: str) -> str:
+    _save_relays([r for r in _load_relays() if r.get("name") != name])
+    return f"unsubscribed from '{name}'"
+
+
+def relays_toggle(name: str, enabled: bool) -> str:
+    relays = _load_relays()
+    for r in relays:
+        if r.get("name") == name:
+            r["enabled"] = bool(enabled)
+    _save_relays(relays)
+    return f"'{name}' {'enabled' if enabled else 'disabled'}"
+
+
+def torrent_status() -> dict:
+    url = os.environ.get("PA_CORPUS_URL", "")
+    if url:
+        try:
+            with urllib.request.urlopen(url.rstrip("/") + "/torrent/status", timeout=1.5) as r:
+                return json.loads(r.read())
+        except Exception:
+            pass
+    if os.environ.get("PA_SWARM_MOCK"):
+        return {"global": {"up_kbps": 42.0, "down_kbps": 128.0, "port": 6881, "dht": True, "num_swarms": 2},
+                "swarms": [
+                    {"corpus_id": "pacs-common", "peers": 6, "seeds": 3, "progress": 0.82,
+                     "cached": 840, "total": 1024, "verified": True, "paused": False},
+                    {"corpus_id": "nostr-longform", "peers": 2, "seeds": 1, "progress": 0.31,
+                     "cached": 120, "total": 384, "verified": True, "paused": False}]}
+    enabled = [r for r in _load_relays() if r.get("enabled")]
+    return {"global": {"up_kbps": 0.0, "down_kbps": 0.0, "port": int(os.environ.get("PA_TORRENT_PORT", "6881")),
+                       "dht": True, "num_swarms": len(enabled)}, "swarms": []}
+
+
+def torrent_control(action: str, corpus_id=None) -> str:
+    url = os.environ.get("PA_CORPUS_URL", "")
+    if url:
+        try:
+            data = json.dumps({"action": action, "corpus_id": corpus_id}).encode()
+            req = urllib.request.Request(url.rstrip("/") + "/torrent/control", data=data,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=2) as r:
+                return str(json.loads(r.read()).get("result", action))
+        except Exception:
+            pass
+    return f"{action} {corpus_id or 'all'} (queued; corpus service offline in dev)"
+
+
 # --- command dispatch --------------------------------------------------------
 DIRS = {"north", "south", "east", "west", "up", "down"}
 DIR_ALIAS = {"n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down"}
@@ -859,6 +1281,16 @@ async def dispatch(p: Player, line: str) -> bool:
     rest = rest.strip()
     p.idle_since = time.time()
 
+    # While a question is pending, most input IS the answer — so "proof of work" is judged even
+    # if it starts with a command word like 'i' (inventory). A few meta verbs still work mid-question.
+    if (p.boss_pending or p.oracle_pending) and verb not in (
+            "quit", "exit", "q", "help", "?", "look", "l", "answer", "admin"):
+        if p.boss_pending:
+            await boss_judge(p, line.strip())
+        else:
+            await oracle_judge(p, line.strip())
+        return True
+
     if verb in ("quit", "exit", "q"):
         await p.send(CLEAR + c(MAG, "The cabinets dim. Come back soon, fren. 💜\r\n"))
         return False
@@ -874,17 +1306,21 @@ async def dispatch(p: Player, line: str) -> bool:
         target = rest.lower() or (ROOMS[p.room]["npcs"][0] if ROOMS[p.room]["npcs"] else "")
         if target == "oracle" and "oracle" in ROOMS[p.room]["npcs"]:
             await oracle_open(p)
+        elif target in ("wraith", "boss") and "wraith" in ROOMS[p.room]["npcs"]:
+            await boss_open(p)
         else:
             push(p, c(GREY, "there's no one by that name here"))
     elif verb == "answer":
-        if p.oracle_pending:
+        if p.boss_pending:
+            await boss_judge(p, rest)
+        elif p.oracle_pending:
             await oracle_judge(p, rest)
         else:
-            push(p, c(GREY, "the Oracle hasn't asked anything yet — try  talk oracle"))
+            push(p, c(GREY, "nothing has asked you a question yet — try  talk oracle  or  challenge"))
     elif verb == "ask":
         tgt, _, q = rest.partition(" ")
         if tgt.lower() == "oracle" and "oracle" in ROOMS[p.room]["npcs"]:
-            await oracle_freeform(p, q.strip() or "teach me something about bitcoin")
+            await converse_oracle(p, q.strip() or "teach me something about bitcoin")
         elif "oracle" not in ROOMS[p.room]["npcs"]:
             push(p, c(GREY, "the Oracle is in its Alcove (north from the entrance)"))
         else:
@@ -897,6 +1333,15 @@ async def dispatch(p: Player, line: str) -> bool:
         await verify_code(p, rest)
     elif verb == "backup":
         await backup_onchain(p)
+    elif verb in ("challenge", "fight", "battle"):
+        if "wraith" in ROOMS[p.room]["npcs"]:
+            await boss_open(p)
+        else:
+            push(p, c(GREY, "nothing to challenge here — the dungeon is  down  from the entrance"))
+    elif verb in ("stats", "attributes", "attr", "level"):
+        await show_attributes(p)
+    elif verb in ("examine", "inspect", "x"):
+        await examine(p, rest)
     elif verb in ("profile", "whoami", "me"):
         await show_profile(p)
     elif verb == "admin":
@@ -917,10 +1362,12 @@ async def dispatch(p: Player, line: str) -> bool:
                    (["   · " + it for it in p.inventory] if p.inventory else ["   nothing but curiosity"]), GREEN)
     elif verb == "who":
         push(p, c(GREEN, f"online ({len(PLAYERS)}): ") + ", ".join((f"@{pl.fren_tag}" if pl.fren_tag else pl.name) for pl in PLAYERS.values()))
+    elif p.boss_pending:
+        await boss_judge(p, line.strip())
     elif p.oracle_pending:
         await oracle_judge(p, line.strip())
     else:
-        push(p, c(GREY, f"you aren't sure how to '{verb}', fren — try  help"))
+        await interpret(p, line)          # the flexible path — heuristics, NPC chat, then the LLM
     return True
 
 
@@ -984,6 +1431,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         data = await asyncio.to_thread(STORE.get_or_create_player, p.name)
         p.room, p.inventory, p.wallet = data["room"], data["inventory"], data["wallet"]
         p.nostr, p.space, p.fren_tag = data["nostr"], data["space"], data["fren_tag"]
+        p.xp, p.level, p.energy = data["xp"], data["level"], data["energy"]
         p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
         hello = f"@{p.fren_tag}" if p.fren_tag else p.name
 

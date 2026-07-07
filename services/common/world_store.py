@@ -68,9 +68,19 @@ class SqliteWorldStore:
                 nostr      TEXT,                          -- linked nostr npub
                 space      TEXT,                          -- linked spaces @name
                 fren_tag   TEXT,                          -- the @fren handle
+                xp         INTEGER NOT NULL DEFAULT 0,    -- knowledge points
+                energy     INTEGER NOT NULL DEFAULT 100,  -- spent/regained in boss fights
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS player_memory (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                player     TEXT NOT NULL,
+                role       TEXT NOT NULL,                 -- 'player' | 'game'
+                text       TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_player_memory ON player_memory(player, id);
             CREATE TABLE IF NOT EXISTS competency_node (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
                 player            TEXT NOT NULL,
@@ -102,13 +112,23 @@ class SqliteWorldStore:
             );
             """
         )
-        # Additive migrations so older dev DBs pick up the identity columns without a wipe.
+        # Additive migrations so older dev DBs pick up new columns without a wipe.
         for col in ("nostr", "space", "fren_tag"):
             try:
                 self.db.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
             except sqlite3.OperationalError:
                 pass  # column already exists
+        for col, ddl in (("xp", "INTEGER NOT NULL DEFAULT 0"), ("energy", "INTEGER NOT NULL DEFAULT 100")):
+            try:
+                self.db.execute(f"ALTER TABLE players ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError:
+                pass
         self.db.commit()
+
+    @staticmethod
+    def level_for_xp(xp: int) -> int:
+        """Simple, legible curve: level = 1 + floor(xp / 100). Level 1 at 0, level 2 at 100…"""
+        return 1 + int(xp) // 100
 
     # --- players -----------------------------------------------------------
     def get_or_create_player(self, name: str) -> dict[str, Any]:
@@ -121,7 +141,9 @@ class SqliteWorldStore:
             )
             self.db.commit()
             return {"name": name, "room": "entrance", "inventory": [], "wallet": wallet,
-                    "nostr": None, "space": None, "fren_tag": None, "new": True}
+                    "nostr": None, "space": None, "fren_tag": None, "xp": 0, "level": 1,
+                    "energy": 100, "new": True}
+        xp = row["xp"] if "xp" in row.keys() else 0
         return {
             "name": row["name"],
             "room": row["room"],
@@ -130,8 +152,51 @@ class SqliteWorldStore:
             "nostr": row["nostr"],
             "space": row["space"],
             "fren_tag": row["fren_tag"],
+            "xp": xp,
+            "level": self.level_for_xp(xp),
+            "energy": row["energy"] if "energy" in row.keys() else 100,
             "new": False,
         }
+
+    # --- attributes (XP / level / energy) ----------------------------------
+    def add_xp(self, name: str, amount: int) -> dict[str, int]:
+        self.db.execute("UPDATE players SET xp = xp + ?, updated_at = datetime('now') WHERE name = ?", (int(amount), name))
+        self.db.commit()
+        xp = self.db.execute("SELECT xp FROM players WHERE name = ?", (name,)).fetchone()["xp"]
+        return {"xp": xp, "level": self.level_for_xp(xp)}
+
+    def adjust_energy(self, name: str, delta: int) -> int:
+        self.db.execute("UPDATE players SET energy = MAX(0, MIN(100, energy + ?)) WHERE name = ?", (int(delta), name))
+        self.db.commit()
+        return self.db.execute("SELECT energy FROM players WHERE name = ?", (name,)).fetchone()["energy"]
+
+    def public_attributes(self, name: str) -> Optional[dict[str, Any]]:
+        """What another player sees when they `examine` you — public stats only, no wallet/keys."""
+        row = self.db.execute("SELECT * FROM players WHERE name = ? OR fren_tag = ?", (name, name.lstrip("@"))).fetchone()
+        if not row:
+            return None
+        xp = row["xp"] if "xp" in row.keys() else 0
+        runes = self.db.execute("SELECT COUNT(*) n FROM class_certificates WHERE player = ?", (row["name"],)).fetchone()["n"]
+        return {"name": row["name"], "fren_tag": row["fren_tag"], "room": row["room"],
+                "xp": xp, "level": self.level_for_xp(xp), "energy": row["energy"] if "energy" in row.keys() else 100,
+                "runes": runes}
+
+    # --- per-player memory (small, capped — feeds the LLM a tiny context) ---
+    def add_memory(self, player: str, role: str, text: str, cap: int = 40) -> None:
+        self.db.execute("INSERT INTO player_memory(player, role, text) VALUES (?, ?, ?)", (player, role, text[:500]))
+        # keep only the most recent `cap` rows per player, so context stays cheap
+        self.db.execute(
+            "DELETE FROM player_memory WHERE player = ? AND id NOT IN "
+            "(SELECT id FROM player_memory WHERE player = ? ORDER BY id DESC LIMIT ?)",
+            (player, player, cap),
+        )
+        self.db.commit()
+
+    def recent_memory(self, player: str, limit: int = 6) -> list[dict[str, str]]:
+        rows = self.db.execute(
+            "SELECT role, text FROM player_memory WHERE player = ? ORDER BY id DESC LIMIT ?", (player, limit)
+        ).fetchall()
+        return [{"role": r["role"], "text": r["text"]} for r in reversed(rows)]
 
     def save_player(self, name: str, room: str, inventory: list[str]) -> None:
         self.db.execute(
@@ -275,6 +340,25 @@ class PostgresWorldStore:
         raise NotImplementedError
 
     def set_feature(self, room: str, key: str, value: Any) -> None:
+        raise NotImplementedError
+
+    @staticmethod
+    def level_for_xp(xp: int) -> int:
+        return 1 + int(xp) // 100
+
+    def add_xp(self, name: str, amount: int) -> dict[str, int]:
+        raise NotImplementedError("PostgresWorldStore.add_xp — UPDATE players SET xp")
+
+    def adjust_energy(self, name: str, delta: int) -> int:
+        raise NotImplementedError
+
+    def public_attributes(self, name: str) -> Optional[dict[str, Any]]:
+        raise NotImplementedError
+
+    def add_memory(self, player: str, role: str, text: str, cap: int = 40) -> None:
+        raise NotImplementedError("PostgresWorldStore.add_memory — INSERT player_memory (or memory_node)")
+
+    def recent_memory(self, player: str, limit: int = 6) -> list[dict[str, str]]:
         raise NotImplementedError
 
     def close(self) -> None:

@@ -13,10 +13,20 @@ carries transient lines (says, arrivals, operator notices). Special effects (bos
 rune-etch) redraw the frame frame-by-frame. Every command that touches the world (`pull lever`,
 `look`) mutates DB-2 via **state-sync** — the MUD never owns world state.
 
-In-game commands include: movement + `look`, `talk oracle` / `answer` / `ask oracle`, `pull lever`,
-`link fren|nostr|space` + `verify <code>`, `backup` (anchor progress on-chain), `profile`, `certs`,
-`inventory`, `say`, `who`, `help`. If the node is wired to **frens.earth** (`PA_FRENS_URL`), new
-players are walked through claiming their `@fren`; standalone nodes keep the plain experience.
+In-game commands include: movement + `look`, `talk oracle` / `answer` / `ask oracle`, `challenge`
+(the boss in the dungeon, `down` from the entrance), `pull lever`, `stats` (your attributes) /
+`examine <name>` (another fren), `link fren|nostr|space` + `verify <code>`, `backup` (anchor
+progress on-chain), `profile`, `certs`, `inventory`, `say`, `who`, `help`. Players have **attributes**
+(level, knowledge XP, runes, energy) shown in the window HUD; XP comes from the Oracle and bosses.
+
+**You don't have to be exact.** A **fast path** runs known commands instantly (zero LLM, zero lag);
+anything unrecognized (or free chat with an NPC) takes the **fuzzy path** — heuristics first, then the
+local LLM with a *tiny* context (compact state + the player's last few turns from DB-2, so no
+memory-blowing context runs). So "sup" to the Oracle, "go down", "who's the boss" all just work when
+`PA_INFERENCE_BASE_URL` + `PA_GEN_MODEL` are set; without a model it falls back to heuristics.
+
+If the node is wired to **frens.earth** (`PA_FRENS_URL`), new players are walked through claiming
+their `@fren`; standalone nodes keep the plain experience.
 
 Boss/lesson animations use the `animate()` primitive — see [`art/`](art/) for the frame pipeline.
 

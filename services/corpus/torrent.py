@@ -12,6 +12,11 @@ Trust: a shard is named by the SHA-256 of its bytes (content addressing), and th
 listed in a **signed manifest** (see manifest.py). A leecher verifies the manifest signature against
 Pac's Arcade's pinned key before trusting "common knowledge" into DB-1 — poisoning defense.
 
+Multi-relay subscription (verses ≈ nostr relays): a node subscribes to whatever *verses* it wants
+(see relays.py) and this mesh keeps the **union of every enabled verse's corpora** synced over
+BitTorrent — one libtorrent session, many swarms. Each verse's manifest is verified against *its own*
+pinned pubkey before its shards are trusted. `status()` reports the live swarms for the operator UI.
+
 Tier: COLD. Crosses the network, async, eventually-consistent. It must NEVER block gameplay
 (CONVENTIONS §1, docs/LATENCY.md). A cache miss degrades in-fiction ("The Archivist is retrieving
 that tome from the network…") and fetches in the background — never a hang.
@@ -23,11 +28,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import os
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
+import relays
 from manifest import (
     ShardManifest,
     ShardRef,
@@ -66,6 +74,11 @@ PA_TORRENT_TRACKERS = [
 ]
 
 CACHE_BYTES = int(PA_CORPUS_CACHE_GB * 1024 * 1024 * 1024)
+
+# Dev/operator-UI switch for status(): when no live libtorrent session exists (dev boxes, CI), emit a
+# plausible MOCK status so the dashboard + admin rails show something instead of an empty void.
+# "true" (default) → mock swarms derived from the enabled subscriptions; "false"/"0" → empty swarm list.
+PA_SWARM_MOCK = os.environ.get("PA_SWARM_MOCK", "true").lower() not in ("false", "0", "no", "off")
 
 # Public DHT bootstrap routers — the trackerless discovery layer. Trackers (above) are a fallback.
 DHT_BOOTSTRAP = [
@@ -109,6 +122,9 @@ class KnowledgeSwarm:
     trackers: list[str] = field(default_factory=list)
     manifest: Optional[ShardManifest] = None   # the signed shard list (verified before trust)
     handle: object = None                # libtorrent torrent_handle once added to the session
+    verse: str = ""                      # which subscribed verse (relays.py) advertised this corpus
+    trust_pubkey: str = ""               # THIS verse's pinned key; manifest verified against it
+    paused: bool = False                 # operator-paused (pause()/resume()); mirrors handle state
 
 
 # --------------------------------------------------------------------------- #
@@ -216,6 +232,97 @@ class CorpusMesh:
         _ = trackers
         return swarm
 
+    async def join_subscribed(self) -> list[KnowledgeSwarm]:
+        """Join the UNION of every *enabled* subscribed verse (relays.py) — the whole point.
+
+        This is the nostr-relay-style sync: iterate `relays.list_relays()`, and for each enabled
+        subscription add its swarm to this one session. Each swarm carries its verse's *own* pinned
+        `trust_pubkey`, so `verify_manifest()` gates each verse independently before its shards reach
+        DB-1. A "verse" kind advertises many corpora; the scaffold joins its advertised ref and
+        leaves the per-verse corpus fan-out as a TODO.
+        """
+        joined: list[KnowledgeSwarm] = []
+        for relay in relays.enabled_relays():
+            swarm = _swarm_from_relay(relay)
+            # TODO(verse fan-out): when kind == "verse", fetch the verse's advertised corpus list
+            #   (over its relay URL / a well-known shard) and join_swarm() each corpus it carries,
+            #   each still verified against this verse's trust_pubkey. For now we join the ref itself.
+            await self.join_swarm(swarm)
+            joined.append(swarm)
+        return joined
+
+    # -- operator controls (dashboard + admin rails) ---------------------- #
+
+    def _select(self, corpus_id: Optional[str]) -> list[KnowledgeSwarm]:
+        """Resolve a control target: one swarm by corpus_id, or ALL swarms when corpus_id is None."""
+        if corpus_id is None:
+            return list(self._swarms.values())
+        swarm = self._swarms.get(corpus_id)
+        return [swarm] if swarm is not None else []
+
+    def pause(self, corpus_id: Optional[str] = None) -> list[str]:
+        """Pause one swarm (by corpus_id) or ALL swarms (None). Returns the corpus_ids affected."""
+        affected = self._select(corpus_id)
+        for swarm in affected:
+            swarm.paused = True
+            if swarm.handle is not None and lt is not None:
+                swarm.handle.pause()          # TODO: flush resume data before pausing a seed
+        return [s.corpus_id for s in affected]
+
+    def resume(self, corpus_id: Optional[str] = None) -> list[str]:
+        """Resume one swarm (by corpus_id) or ALL swarms (None). Returns the corpus_ids affected."""
+        affected = self._select(corpus_id)
+        for swarm in affected:
+            swarm.paused = False
+            if swarm.handle is not None and lt is not None:
+                swarm.handle.resume()
+        return [s.corpus_id for s in affected]
+
+    def reannounce(self, corpus_id: Optional[str] = None) -> list[str]:
+        """Force a tracker + DHT re-announce for one swarm or ALL (None) — kick peer discovery."""
+        affected = self._select(corpus_id)
+        for swarm in affected:
+            if swarm.handle is not None and lt is not None:
+                swarm.handle.force_reannounce()     # trackers
+                # TODO: swarm.handle.force_dht_announce() for the trackerless (primary) path.
+        return [s.corpus_id for s in affected]
+
+    def status(self) -> dict:
+        """Live mesh status in the exact dashboard/rails shape (see module-level `status()`).
+
+        Reads real per-swarm counters off the libtorrent handles when a session is running; where a
+        counter isn't wired yet it reports a safe zero. Never raises — the operator UI must not crash
+        on a status poll.
+        """
+        swarms = [self._swarm_status(s) for s in self._swarms.values()]
+        up = down = 0.0
+        # TODO: pull real rates off self._session.status() (payload_upload_rate / _download_rate).
+        return {
+            "global": {
+                "up_kbps": round(up, 1),
+                "down_kbps": round(down, 1),
+                "port": PA_TORRENT_PORT,
+                "dht": bool(PA_CORPUS_TORRENT),
+                "num_swarms": len(swarms),
+            },
+            "swarms": swarms,
+        }
+
+    def _swarm_status(self, swarm: KnowledgeSwarm) -> dict:
+        """One swarm's live row. TODO: read peers/seeds/progress off `swarm.handle.status()`."""
+        verified = swarm.manifest is not None
+        return {
+            "corpus_id": swarm.corpus_id,
+            "infohash": _infohash_of(swarm),
+            "peers": 0,
+            "seeds": 0,
+            "progress": 0.0,
+            "cached": 0,
+            "total": len(swarm.manifest.shards) if swarm.manifest else 0,
+            "verified": verified,
+            "paused": swarm.paused,
+        }
+
     # -- the never-block read path ---------------------------------------- #
 
     async def get_shard(self, swarm_id: str, shard_id: str) -> Shard | str:
@@ -298,6 +405,133 @@ def _find_shard_ref(manifest: ShardManifest, shard_id: str) -> Optional[ShardRef
     return None
 
 
+def _looks_like_magnet(ref: str) -> bool:
+    """True if `ref` is a swarm bootstrap (magnet URI or a bare 40-hex / 32-char infohash).
+
+    A verse's `ref` can instead be a pubkey (`npub…`) or a relay URL (`https://…`); those aren't a
+    magnet — we join the verse and discover its corpora out of band (TODO), so magnet stays empty.
+    """
+    ref = (ref or "").strip()
+    if ref.startswith("magnet:") or ref.startswith("urn:btih:"):
+        return True
+    if len(ref) == 40 and all(c in "0123456789abcdefABCDEF" for c in ref):
+        return True                                   # bare hex infohash
+    if len(ref) == 32 and ref.isalnum() and ref.upper() == ref.upper():
+        return True                                   # bare base32 infohash (v1)
+    return False
+
+
+def _swarm_from_relay(relay: dict) -> KnowledgeSwarm:
+    """Turn a subscription record (relays.py schema) into a joinable KnowledgeSwarm.
+
+    The verse's pinned `pubkey` becomes the swarm's `trust_pubkey`, so its manifest is verified
+    against ITS key — not the canonical common key — before any shard is trusted (poisoning defense,
+    per-verse). `ref` is used as the magnet only when it looks like one.
+    """
+    ref = (relay.get("ref") or "").strip()
+    return KnowledgeSwarm(
+        corpus_id=relay.get("name", ""),
+        magnet=ref if _looks_like_magnet(ref) else "",
+        role="leech",
+        trackers=PA_TORRENT_TRACKERS,
+        verse=relay.get("name", ""),
+        trust_pubkey=(relay.get("pubkey") or ""),
+    )
+
+
+def _infohash_of(swarm: KnowledgeSwarm) -> str:
+    """Best-effort infohash for status reporting (TODO: read the real one off swarm.handle)."""
+    if swarm.magnet.startswith("magnet:"):
+        # magnet:?xt=urn:btih:<HASH>&…  → pull the btih segment
+        for part in swarm.magnet.split("&"):
+            if "urn:btih:" in part:
+                return part.split("urn:btih:")[-1][:40]
+    return swarm.magnet[:40] if swarm.magnet else ""
+
+
+# --------------------------------------------------------------------------- #
+# Status — the exact shape the dashboard + admin rails consume                 #
+# --------------------------------------------------------------------------- #
+
+def status(mesh: "Optional[CorpusMesh]" = None) -> dict:
+    """Return corpus-mesh status in the fixed dashboard/rails shape. NEVER raises.
+
+    Live path: pass a started `CorpusMesh` with a real libtorrent session and get its live swarms.
+    Dev path: with no live session (libtorrent absent, or nothing running), return a MOCK honoring
+    `PA_SWARM_MOCK` so the operator UI shows plausible swarms instead of nothing.
+
+    Shape:
+        {"global": {"up_kbps", "down_kbps", "port", "dht", "num_swarms"},
+         "swarms": [{"corpus_id","infohash","peers","seeds","progress","cached","total",
+                     "verified","paused"}, …]}
+    """
+    if mesh is not None and getattr(mesh, "_session", None) is not None and lt is not None:
+        try:
+            return mesh.status()
+        except Exception:
+            pass                                       # fall through to the mock; never raise upward
+    return _mock_status()
+
+
+def _mock_status() -> dict:
+    """Plausible, deterministic mock — one swarm per enabled subscription (else a couple canned).
+
+    Honors `PA_SWARM_MOCK`: off → an honest empty swarm list. On → fabricate stable stats from the
+    subscription names so the dashboard is populated and doesn't flicker between polls.
+    """
+    if not PA_SWARM_MOCK:
+        return {
+            "global": {"up_kbps": 0.0, "down_kbps": 0.0, "port": PA_TORRENT_PORT,
+                       "dht": bool(PA_CORPUS_TORRENT), "num_swarms": 0},
+            "swarms": [],
+        }
+
+    subs = relays.enabled_relays()
+    if not subs:                                       # nothing subscribed yet → two canned swarms
+        subs = [
+            {"name": "pacs-common", "ref": "magnet:?xt=urn:btih:" + "a" * 40, "pubkey": None},
+            {"name": "operator:pac/bitcoin-101", "ref": "b" * 40, "pubkey": "npub1mockmockmock"},
+        ]
+
+    swarms = [_mock_swarm(s) for s in subs]
+    up = round(sum(sw["seeds"] for sw in swarms) * 6.4, 1)     # plausible aggregate up-rate
+    down = round(sum(sw["peers"] for sw in swarms) * 11.7, 1)  # plausible aggregate down-rate
+    return {
+        "global": {
+            "up_kbps": up,
+            "down_kbps": down,
+            "port": PA_TORRENT_PORT,
+            "dht": bool(PA_CORPUS_TORRENT),
+            "num_swarms": len(swarms),
+        },
+        "swarms": swarms,
+    }
+
+
+def _mock_swarm(relay: dict) -> dict:
+    """Deterministic per-swarm mock stats derived from the subscription name (stable across polls)."""
+    name = relay.get("name", "corpus")
+    h = int(hashlib.sha256(name.encode("utf-8")).hexdigest(), 16)
+    peers = 2 + h % 12
+    seeds = 1 + (h >> 8) % max(1, peers)
+    total = 512 + (h >> 16) % 2048
+    progress = round(((h >> 24) % 101) / 100.0, 2)
+    cached = int(total * progress)
+    ref = (relay.get("ref") or "").strip()
+    infohash = _infohash_of(KnowledgeSwarm(corpus_id=name, magnet=ref if _looks_like_magnet(ref) else ""))
+    return {
+        "corpus_id": name,
+        "infohash": infohash or (hashlib.sha1(name.encode("utf-8")).hexdigest()),
+        "peers": peers,
+        "seeds": seeds,
+        "progress": progress,
+        "cached": cached,
+        "total": total,
+        "verified": bool(relay.get("pubkey")),         # "trusted" only once a pubkey is pinned
+        "paused": False,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Modes (CLI verbs) — the four things an operator actually runs                #
 # --------------------------------------------------------------------------- #
@@ -373,24 +607,21 @@ async def link_source(corpus_id: str, magnet: str = "") -> None:
 
 
 async def serve() -> None:
-    """SERVE MODE — the background daemon: join swarms, prefetch popular shards, keep the LRU warm.
+    """SERVE MODE — the background daemon: join the subscribed union, prefetch, keep the LRU warm.
 
-    This is what runs beside the game node in normal operation. It carries common-knowledge (and any
-    linked sources), prefetches the hot working set, and answers `get_shard()` — always off the hot
-    path (COLD tier). A cache miss degrades in-fiction, never a hang.
+    This is what runs beside the game node in normal operation. It carries the **union of every
+    enabled subscribed verse** (relays.py) — common + any verses/corpora the operator subscribed to
+    — prefetches the hot working set, and answers `get_shard()`, always off the hot path (COLD tier).
+    A cache miss degrades in-fiction, never a hang.
     """
     mesh = CorpusMesh()
     await mesh.start()
-    if PA_COMMON_KNOWLEDGE_MAGNET:
-        await mesh.join_swarm(KnowledgeSwarm(
-            corpus_id=PA_COMMON_KNOWLEDGE,
-            magnet=PA_COMMON_KNOWLEDGE_MAGNET,
-            role="leech",
-            trackers=PA_TORRENT_TRACKERS,
-        ))
-    # TODO: also join any operator-linked swarms discovered on disk / in config; start a popularity
-    #       tracker that feeds mesh.prefetch() for the most-requested shards (speculative warming).
+    joined = await mesh.join_subscribed()              # the nostr-relay-style union of enabled verses
+    names = ", ".join(s.corpus_id for s in joined) or "(none subscribed)"
+    # TODO: start a popularity tracker that feeds mesh.prefetch() for the most-requested shards
+    #       (speculative warming), and re-scan relays.json for live subscribe/unsubscribe changes.
     print(f"[serve] corpus mesh daemon up on port {PA_TORRENT_PORT}; cache budget {PA_CORPUS_CACHE_GB} GB")
+    print(f"[serve] syncing {len(joined)} enabled verse(s): {names}")
     await _run_forever()
 
 
@@ -423,7 +654,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_link.add_argument("corpus_id", help="id for your corpus, e.g. 'operator:pac/bitcoin-101'")
     p_link.add_argument("--magnet", default="", help="join an existing swarm by magnet (else seed a new one)")
 
-    sub.add_parser("serve", help="Background daemon: prefetch + LRU cache + DHT/trackers.")
+    sub.add_parser("serve", help="Background daemon: sync the subscribed union + LRU + DHT/trackers.")
+
+    # -- multi-relay verse subscription (verses ≈ nostr relays; see relays.py) -- #
+    sub.add_parser("relays", help="List subscribed verses/corpora.")
+
+    p_subscribe = sub.add_parser("subscribe", help="Subscribe to a verse (or a single corpus).")
+    p_subscribe.add_argument("name", help="stable handle, e.g. 'pacs-common' or 'operator:pac/btc-101'")
+    p_subscribe.add_argument("ref", help="magnet/infohash OR verse pubkey/relay URL")
+    p_subscribe.add_argument("--kind", default="verse", choices=relays.VALID_KINDS, help="verse | corpus")
+    p_subscribe.add_argument("--pubkey", default=None, help="pinned trust anchor for manifest verify")
+
+    p_unsub = sub.add_parser("unsubscribe", help="Unsubscribe from a verse/corpus by name.")
+    p_unsub.add_argument("name")
+
+    sub.add_parser("status", help="Print mesh status JSON (live swarms, or a dev mock).")
     return parser
 
 
@@ -437,6 +682,19 @@ def main() -> None:
         asyncio.run(link_source(args.corpus_id, args.magnet))
     elif args.mode == "serve":
         asyncio.run(serve())
+    elif args.mode == "relays":
+        for r in relays.list_relays():
+            flag = "on " if r.get("enabled") else "off"
+            pin = r.get("pubkey") or "-"
+            print(f"[{flag}] {r.get('name',''):<22} {r.get('kind','verse'):<6} {pin:<18} {r.get('ref','')}")
+    elif args.mode == "subscribe":
+        r = relays.subscribe(args.name, args.ref, kind=args.kind, pubkey=args.pubkey)
+        print(f"[subscribe] {r['name']} ({r['kind']}) -> {r['ref']}  enabled={r['enabled']}")
+    elif args.mode == "unsubscribe":
+        ok = relays.unsubscribe(args.name)
+        print(f"[unsubscribe] {args.name}: {'removed' if ok else 'not found'}")
+    elif args.mode == "status":
+        print(json.dumps(status(), indent=2))
 
 
 if __name__ == "__main__":

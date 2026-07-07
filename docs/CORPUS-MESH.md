@@ -100,6 +100,47 @@ A node runs **one** libtorrent session (port `6881`) carrying **many** `Knowledg
 per-topic subsets, an operator's linked source — each with its own infohash and its own signed
 manifest. `CorpusMesh.join_swarm()` adds them; `get_shard(swarm_id, shard_id)` reads across them.
 
+## Multi-relay subscription (verses ≈ nostr relays)
+
+The mesh is **subscription-driven**, the same way a nostr client is relay-driven. A **verse** is to
+this corpus mesh what a **relay** is to nostr: a source you *choose* to listen to. A node subscribes
+to whatever verses it wants to see, and the mesh keeps the **union of every *enabled* verse's
+corpora** synced over BitTorrent. Nothing is central; you curate your own view.
+
+- **Subscribe to any verse.** `subscribe(name, ref, kind, pubkey)` adds a verse (or a single
+  corpus). `ref` is a magnet/infohash **or** a verse pubkey / relay URL. `kind` is `"verse"` (a whole
+  verse advertising *many* corpora) or `"corpus"` (a single swarm). Idempotent — re-subscribing by
+  the same `name` updates it.
+- **The union is what you sync.** `serve` joins **every enabled subscription** (`join_subscribed()`),
+  one swarm per corpus, in the single port-`6881` session. Toggle a verse in/out with
+  `set_enabled()` — like muting a relay — without forgetting it. Disabled verses aren't synced.
+- **Trust is per-verse and pinned.** Each subscription carries its **own** `pubkey`. A verse's signed
+  manifest is verified against *that* pinned key (`verify_manifest()` in `manifest.py`) before any of
+  its shards are trusted into DB-1 — subscribing to a verse is **not** trusting it blindly. A verse
+  with no pinned key is joined but nothing it serves is ingested. Same poisoning defense as common,
+  applied independently to every verse.
+- **The subscription config is a shared file.** Subscriptions live in **`data/relays.json`**
+  (`PA_RELAYS_FILE`). The corpus mesh reads it; the **operator manages it from the web console** (the
+  MUD admin rails read/write the *same* file), so subscribe/unsubscribe/enable/disable from the
+  browser and the CLI stay in sync. Schema:
+
+  ```json
+  {"relays": [
+    {"name": "pacs-common", "ref": "magnet:?xt=urn:btih:...", "pubkey": "npub1... or null",
+     "kind": "verse", "enabled": true, "added_at": "2026-07-07T..."}
+  ]}
+  ```
+
+  On first load the file is **seeded** with the canonical `pacs-common` verse (enabled), from
+  `PA_COMMON_KNOWLEDGE` / `PA_COMMON_KNOWLEDGE_MAGNET` / `PA_COMMON_KNOWLEDGE_PUBKEY` — so a fresh
+  node already carries Pac's Arcade's shared ground truth and the operator just adds more.
+
+- **Operator status.** `status()` returns the live swarms (global up/down/port/dht/num_swarms plus a
+  row per swarm: peers, seeds, progress, cached/total, verified, paused) for the dashboard + rails.
+  On a dev box with no libtorrent session it returns a **mock** (honoring `PA_SWARM_MOCK`) so the
+  console shows something instead of an empty void. Controls `pause`/`resume`/`reannounce` act on one
+  corpus or all swarms.
+
 ## Cache, prefetch, and never-block
 
 - **LRU cache**, byte-budgeted by `PA_CORPUS_CACHE_GB` (a big corpus won't fit locally — keep the hot
@@ -119,13 +160,27 @@ manifest. `CorpusMesh.join_swarm()` adds them; `get_shard(swarm_id, shard_id)` r
 | `seed` | Pac's Arcade | Pack DB-1 → shards, build + **sign** the manifest, create + seed the torrent, publish the magnet/infohash. |
 | `sync-common` | any operator | Join the common swarm, **verify** the manifest against the pinned key, pull verified shards. |
 | `link-source` | any operator | Register/seed the operator's **own** corpus alongside common, signed with their own key. |
-| `serve` | any operator | Background daemon: carry swarms, prefetch popular shards, keep the LRU warm, DHT + tracker fallback. |
+| `serve` | any operator | Background daemon: sync the **subscribed union** (all enabled verses), prefetch popular shards, keep the LRU warm, DHT + tracker fallback. |
+
+Plus the **subscription** verbs (verses ≈ nostr relays — manage `data/relays.json`):
+
+| Verb | Does |
+|------|------|
+| `relays` | List every subscribed verse/corpus (enabled or not). |
+| `subscribe <name> <ref> [--kind verse\|corpus] [--pubkey …]` | Subscribe to (or update) a verse/corpus. |
+| `unsubscribe <name>` | Drop a subscription. |
+| `status` | Print mesh status JSON (live swarms, or a dev mock). |
 
 ```bash
 python torrent.py seed                              # Pac's Arcade canonical seed node
 python torrent.py sync-common                       # pull the shared corpus (verified)
 python torrent.py link-source operator:pac/btc-101  # also seed your own corpus
-python torrent.py serve                             # the background daemon
+python torrent.py serve                             # daemon: sync the union of enabled verses
+
+python torrent.py relays                            # list subscribed verses
+python torrent.py subscribe frens-earth npub1…  --kind verse --pubkey npub1…   # add a verse
+python torrent.py unsubscribe frens-earth           # stop syncing it
+python torrent.py status                            # operator status JSON
 ```
 
 ## Verses swarming a corpus
@@ -169,6 +224,8 @@ python torrent.py serve                             # the background daemon
 | `PA_COMMON_KNOWLEDGE` | `common-knowledge` | corpus_id of the canonical shared swarm. |
 | `PA_COMMON_KNOWLEDGE_MAGNET` | *(empty)* | magnet URI / infohash bootstrapping the common swarm. |
 | `PA_COMMON_KNOWLEDGE_PUBKEY` | *(empty)* | pinned key that must have signed the common manifest. |
+| `PA_RELAYS_FILE` | `data/relays.json` | shared verse-subscription config (mesh + MUD admin rails). |
+| `PA_SWARM_MOCK` | `true` | when no live session, `status()` emits a plausible mock (`false` → empty). |
 | `PA_TORRENT_PORT` | `6881` | libtorrent listen port (CONVENTIONS §2). |
 | `PA_CORPUS_CACHE_GB` | `8` | LRU byte budget for resident shards. |
 | `PA_CORPUS_DATA_DIR` | `/corpus/shards` | on-disk shard store. |
