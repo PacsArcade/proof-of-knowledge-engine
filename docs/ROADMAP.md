@@ -72,6 +72,13 @@ are the next features. Grouped so we can pick a coherent slice at a time.
   per-class breakdown once Epic 3 lands.
 
 ## Epic 5 — Reach: the "togo" edition + magical branding
+- **Browser client (v1 landed).** Play POKEMUD in a browser at `:4001/play` over a **stdlib
+  WebSocket bridge** (`webbridge.py`) — the same engine, rendered from the server's ANSI redraws
+  with a small in-browser interpreter + a CRT theme, and linked from the operator console. **Next:**
+  a server-side **JSON render mode** so the browser receives *structured* screen state (title, body,
+  HUD, log, exits) and can do real effects — canvas glow, sound, asciify animations, a compact
+  responsive layout for phones/cyberdecks — instead of interpreting ANSI. This is the clean seam for
+  the design team to build the login/experience overhaul on.
 - **Small screens / cyberdecks.** A **togo version** for phones, Raspberry Pi, and the cyberdeck
   builds — a study buddy on the go. Make the board width responsive (`PA_MUD_WIDTH`), wrap all
   content (including the help + HUD) to it, and offer a compact layout under ~50 cols.
