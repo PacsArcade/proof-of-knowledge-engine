@@ -22,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 import textwrap
@@ -254,6 +255,8 @@ class Player:
         self.idle_since = time.time()
         self.is_admin = False
         self.in_game = False               # False until past the name prompt
+        self.web = False                   # True for browser clients (WebSocket + JSON render mode)
+        self.pending_fx: list[str] = []    # one-shot effect cues for the web client (etch/victory/levelup)
 
     async def send(self, text: str) -> None:
         self.writer.write(text.encode("utf-8", "replace"))
@@ -347,8 +350,52 @@ def render_screen(p: Player) -> str:
     return out
 
 
+# --- JSON render mode (browser clients) --------------------------------------
+# Telnet clients get ANSI (render_screen). Browser clients get a STRUCTURED screen model, so the
+# web client can render it as real UI — glow, animation, sound — instead of interpreting ANSI.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_COLOR_NAME = {GREEN: "green", AMBER: "amber", CYAN: "cyan", MAG: "magenta",
+               GREY: "grey", RED: "red", GOLD: "gold"}
+
+
+def _plain(s: str) -> str:
+    return _ANSI.sub("", s)
+
+
+def _color_name(ansi: str) -> str:
+    return _COLOR_NAME.get(ansi, "green")
+
+
+def display_name(p: "Player") -> str:
+    return f"@{p.fren_tag}" if p.fren_tag else p.name
+
+
+def screen_model(p: "Player") -> dict:
+    """The structured screen the browser renders. Everything is plain text + hints — no ANSI."""
+    room = ROOMS[p.room]
+    f = p.focus or {"title": room["title"], "lines": [], "color": GREEN}
+    fx, p.pending_fx = p.pending_fx, []
+    return {
+        "t": "screen",
+        "room": room["title"],
+        "who": display_name(p),
+        "hud": {"level": p.level, "xp": p.xp, "xp_into": p.xp % 100,
+                "runes": len(p.certs), "energy": p.energy},
+        "title": f.get("title") or room["title"],
+        "color": _color_name(f.get("color", GREEN)),
+        "body": [_plain(l) for l in f.get("lines", [])],
+        "exits": list(room["exits"].keys()),
+        "log": [_plain(l) for l in list(p.log)[-LOG_H:]],
+        "fx": fx,
+    }
+
+
 async def show(p: Player) -> None:
-    if p.in_game:
+    if not p.in_game:
+        return
+    if p.web:
+        await p.send(json.dumps(screen_model(p)))
+    else:
         await p.send(render_screen(p))
 
 
@@ -452,9 +499,13 @@ async def etch_class_rune(p: Player, spec: dict) -> None:
         STORE.etch_certificate, p.name, spec["class_id"], spec["rune"], spec["title"], p.wallet, block
     )
     p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+    old_level = p.level
     res = await asyncio.to_thread(STORE.add_xp, p.name, 100); p.xp, p.level = res["xp"], res["level"]
+    p.pending_fx.append("etch")                        # cue the web client to glow/particle the etch
     await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.0)
     focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
+    if p.level > old_level:
+        p.pending_fx.append("levelup")
     push(p, c(GOLD, f"🎓 etched {spec['rune']}  (+100 xp)"))
 
 
@@ -955,6 +1006,7 @@ async def boss_open(p: Player) -> None:
 async def boss_judge(p: Player, ans: str) -> None:
     if any(k in ans.lower() for k in WRAITH["keys"]):
         p.boss_pending = None
+        p.pending_fx.append("victory")                 # cue the web client's boss-defeat effect
         await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " - defeated", GOLD, hold=1.1)
         res = await asyncio.to_thread(STORE.add_xp, p.name, WRAITH["xp"]); p.xp, p.level = res["xp"], res["level"]
         p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, 20)
@@ -1447,15 +1499,22 @@ def clean_line(raw: bytes) -> str:
     return out.decode("utf-8", "replace").strip()
 
 
-async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, web: bool = False) -> None:
     p = Player(writer)
+    p.web = web
     PLAYERS[writer] = p
     try:
-        await p.send(RESIZE)
-        for col in SHIMMER:                       # the banner glimmers on login ✨
-            await p.send(CLEAR + make_banner(col))
-            await asyncio.sleep(0.16)
-        await p.send(c(AMBER, "\nBy what name shall the arcade know you, fren? "))
+        if web:
+            # The browser renders its own (magical) login; just hand it the node info + a name prompt.
+            await p.send(json.dumps({"t": "hello", "node": os.environ.get("PA_NODE_NAME", "a POKE node"),
+                                     "site": LOCAL_SITE_URL,
+                                     "prompt": "By what name shall the arcade know you, fren?"}))
+        else:
+            await p.send(RESIZE)
+            for col in SHIMMER:                       # the banner glimmers on login ✨
+                await p.send(CLEAR + make_banner(col))
+                await asyncio.sleep(0.16)
+            await p.send(c(AMBER, "\nBy what name shall the arcade know you, fren? "))
         raw = await reader.readline()
         name = clean_line(raw)
         if name:
@@ -1519,7 +1578,7 @@ async def _ws_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter)
         except Exception:
             pass
         return
-    await handle_client(webbridge.WSReader(reader, writer), webbridge.WSWriter(writer))
+    await handle_client(webbridge.WSReader(reader, writer), webbridge.WSWriter(writer), web=True)
 
 
 async def main() -> None:

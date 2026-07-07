@@ -68,9 +68,12 @@ python services/mud/play.py       # a tiny terminal client — or: telnet 127.0.
 **Play in a browser** — open **`http://127.0.0.1:4001/play`**. A self-contained web client
 ([`webclient.html`](webclient.html)) connects over a **stdlib WebSocket bridge**
 ([`webbridge.py`](webbridge.py)) to the *same* game loop the telnet client uses — one engine, two
-transports — and renders the server's ANSI redraws with a tiny in-browser interpreter + a CRT
-theme. Great for the flagship site and phones/cyberdecks; the design team can restyle it freely.
-Point your local arcade site at it, and set `PA_LOCAL_SITE_URL` to link back from the console/game.
+transports. Browser clients get a **JSON render mode**: the server sends *structured* screen state
+(`screen_model` → `{title, color, body, hud, exits, log, fx}`), so the page renders **real UI** — a
+color-themed panel, a live HUD, clickable door chips, and effect cues (rune-etch glow, boss shake,
+level-up). Telnet clients still get ANSI, unchanged. Great for the flagship site and phones/
+cyberdecks; the design team owns the visuals. Set `PA_LOCAL_SITE_URL` to link back to your local
+arcade site from the console + game.
 
 Dev mode keeps the world in a local SQLite file (`services/common/world_store.py`) and uses your
 local LLM if `PA_INFERENCE_BASE_URL` + `PA_GEN_MODEL` are set, else a scripted pacbot Oracle. Your
