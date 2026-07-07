@@ -20,6 +20,27 @@ are the next features. Grouped so we can pick a coherent slice at a time.
 
 ---
 
+## Landed (round 2 — post play-test)
+- Browser play + **JSON render mode** (structured screen state → real UI + effects); telnet still ANSI.
+- Name guard (no player called "help"/"quit"); **single live session per name** (a new device takes
+  over the old — fixes multi-device state divergence); goodnight + **session summary** on quit and a
+  **welcome-back summary** on return; **anti-farming** (a boss rewards XP/rune only the first time you
+  learn it); cyan up/down door arrows; slower animations; POKEMUD branding; admin **world + client**
+  columns; `play.py` exits cleanly on disconnect; **`docs/DESIGN-CONSOLE.md`** theming guide.
+
+## Epic — Boss lessons that teach (riddles, reinforcement) — notes for the LLM wiring
+- **Reinforcement, not farming.** A boss gives loot once. On a *rematch* it should pose a **new or
+  harder** question — a reinforcement-learning check with fresh scenarios — and only reward genuinely
+  new understanding (advanced topic, spaced repetition). Structure now: `class_id`/competency gates
+  the reward (done); next: a **question bank per boss** with difficulty tiers + a spaced-repetition
+  scheduler, and (with a local LLM) dynamically generated variations.
+- **Riddles + mini-games.** Let bosses run riddles, logic puzzles, and small games (not just Q&A).
+  Design a `Boss` schema: `{intro_frames, mode: qa|riddle|game, bank[], difficulty, reward}` so a
+  boss is data, not code — then the Architect/LLM can author new ones.
+- **Multi-device / sync (notes).** Session takeover landed; refine to *ask* "new session detected —
+  is this you? continue here or there?" instead of a hard takeover, and design **cross-verse memory
+  replication** (the pokenetwork) via signed nostr events so progress follows the player everywhere.
+
 ## Epic 1 — Identity: nostr sign-in, name@space, pairing, verification
 - **Nostr admin sign-in.** pacsarcade-org has a new nostr sign-in module — reuse it. The console
   **token is for first setup only**; once an admin links their nostr key we verify *them* (NIP-07

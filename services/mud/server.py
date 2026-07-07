@@ -22,7 +22,9 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import secrets
+from collections import deque
 import sys
 import textwrap
 import threading
@@ -43,6 +45,9 @@ GEN_MODEL = os.environ.get("PA_GEN_MODEL", "")
 FRENS_URL = os.environ.get("PA_FRENS_URL", "")   # empty => this node is standalone
 MUD_WS_PORT = int(os.environ.get("PA_MUD_WS_PORT", "4002"))   # browser WebSocket bridge (play in a browser)
 LOCAL_SITE_URL = os.environ.get("PA_LOCAL_SITE_URL", "")      # the physically-local pacsarcade-area website
+# The world/verse this node hosts — shown in the operator console. Ties to the server's space once
+# the owner links it (PA_SPACE), else the node name, else the default POKEMUD world.
+WORLD = os.environ.get("PA_SPACE") or os.environ.get("PA_NODE_NAME") or "POKEMUD"
 
 
 def frens_aware() -> bool:
@@ -254,6 +259,13 @@ class Player:
         self.idle_since = time.time()
         self.is_admin = False
         self.in_game = False               # False until past the name prompt
+        self.web = False                   # True for browser clients (WebSocket + JSON render mode)
+        self.pending_fx: list[str] = []    # one-shot effect cues for the web client (etch/victory/levelup)
+        self.session_start_xp = 0          # snapshots for the "goodnight" session summary
+        self.session_start_runes = 0
+        self.muted = False                 # operator moderation
+        self.timeout_until = 0.0
+        self.watched = False
 
     async def send(self, text: str) -> None:
         self.writer.write(text.encode("utf-8", "replace"))
@@ -296,34 +308,54 @@ def push(p: Player, line: str) -> None:
     p.log = p.log[-LOG_H:]
 
 
+def _render_border(chars: list[str], doors: set) -> str:
+    """Join a border char list, coloring door positions CYAN (like the ◄ ► side doors) and the
+    rest magenta — so every exit is the same cyan-arrow style."""
+    out, i, n = "", 0, len(chars)
+    while i < n:
+        run = i in doors
+        j = i
+        while j < n and (j in doors) == run:
+            j += 1
+        seg = "".join(chars[i:j])
+        out += c(CYAN, seg) if run else c(MAG, seg)
+        i = j
+    return out
+
+
 def _frame(title: str, body: list[str], exits: dict, color: str) -> list[str]:
     W = BOARD_W
     rows = list(body)[:BODY_H]
     while len(rows) < BODY_H:
         rows.append("")
     mid = BODY_H // 2
-    top = list("═" * W)
-    sign = f"╡ {title} ╞"
-    for i, ch in enumerate(sign):
-        if 3 + i < W:
+
+    # top: cyan ▲ (north, centered) + a cyan ▲up corner (up), then the title
+    top = list("═" * W); tdoors = set()
+    if "north" in exits:
+        top[W // 2] = "▲"; tdoors.add(W // 2)
+    if "up" in exits:
+        for j, ch in enumerate("▲up"):
+            top[W - 7 + j] = ch; tdoors.add(W - 7 + j)
+    for i, ch in enumerate(f"╡ {title} ╞"):
+        if 3 + i < W and (3 + i) not in tdoors:
             top[3 + i] = ch
-    if "north" in exits:                 # doors are gaps/arrows in the frame
-        top[W // 2 - 1:W // 2 + 2] = list(" ▲ ")
-    if "up" in exits:                    # up/down have no wall edge, so label them (per-char = no resize)
-        for j, ch in enumerate("^up"):
-            top[W - 6 + j] = ch
-    out = [c(MAG, "╔") + c(MAG, "".join(top)) + c(MAG, "╗")]
+    out = [c(MAG, "╔") + _render_border(top, tdoors) + c(MAG, "╗")]
+
+    # sides: cyan ◄ / ► doors on the middle row
     for i, line in enumerate(rows):
         left = c(CYAN, "◄") if (i == mid and "west" in exits) else c(MAG, "║")
         right = c(CYAN, "►") if (i == mid and "east" in exits) else c(MAG, "║")
         out.append(left + " " + c(color, line[:W - 2].ljust(W - 2)) + " " + right)
-    bot = list("═" * W)
+
+    # bottom: cyan ▼ (south, centered) + a cyan ▼dn corner (down)
+    bot = list("═" * W); bdoors = set()
     if "south" in exits:
-        bot[W // 2 - 1:W // 2 + 2] = list(" ▼ ")
+        bot[W // 2] = "▼"; bdoors.add(W // 2)
     if "down" in exits:
-        for j, ch in enumerate("vdn"):
-            bot[W - 6 + j] = ch
-    out.append(c(MAG, "╚") + c(MAG, "".join(bot)) + c(MAG, "╝"))
+        for j, ch in enumerate("▼dn"):
+            bot[W - 7 + j] = ch; bdoors.add(W - 7 + j)
+    out.append(c(MAG, "╚") + _render_border(bot, bdoors) + c(MAG, "╝"))
     return out
 
 
@@ -347,9 +379,68 @@ def render_screen(p: Player) -> str:
     return out
 
 
+# --- JSON render mode (browser clients) --------------------------------------
+# Telnet clients get ANSI (render_screen). Browser clients get a STRUCTURED screen model, so the
+# web client can render it as real UI — glow, animation, sound — instead of interpreting ANSI.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_COLOR_NAME = {GREEN: "green", AMBER: "amber", CYAN: "cyan", MAG: "magenta",
+               GREY: "grey", RED: "red", GOLD: "gold"}
+
+
+def _plain(s: str) -> str:
+    return _ANSI.sub("", s)
+
+
+def _color_name(ansi: str) -> str:
+    return _COLOR_NAME.get(ansi, "green")
+
+
+def display_name(p: "Player") -> str:
+    return f"@{p.fren_tag}" if p.fren_tag else p.name
+
+
+def screen_model(p: "Player") -> dict:
+    """The structured screen the browser renders. Everything is plain text + hints — no ANSI."""
+    room = ROOMS[p.room]
+    f = p.focus or {"title": room["title"], "lines": [], "color": GREEN}
+    fx, p.pending_fx = p.pending_fx, []
+    return {
+        "t": "screen",
+        "room": room["title"],
+        "who": display_name(p),
+        "hud": {"level": p.level, "xp": p.xp, "xp_into": p.xp % 100,
+                "runes": len(p.certs), "energy": p.energy},
+        "title": f.get("title") or room["title"],
+        "color": _color_name(f.get("color", GREEN)),
+        "body": [_plain(l) for l in f.get("lines", [])],
+        "exits": list(room["exits"].keys()),
+        "log": [_plain(l) for l in list(p.log)[-LOG_H:]],
+        "fx": fx,
+    }
+
+
 async def show(p: Player) -> None:
-    if p.in_game:
+    if not p.in_game:
+        return
+    if p.web:
+        await p.send(json.dumps(screen_model(p)))
+    else:
         await p.send(render_screen(p))
+
+
+# Command words a player may NOT use as a name (so nobody is called "help" or "quit").
+RESERVED_NAMES = {"help", "quit", "exit", "q", "look", "l", "admin", "oracle", "wraith", "boss",
+                  "say", "go", "north", "south", "east", "west", "up", "down", "n", "s", "e", "w",
+                  "talk", "answer", "ask", "challenge", "fight", "stats", "profile", "certs", "runes",
+                  "inventory", "inv", "i", "backup", "link", "verify", "who", "pull", "examine"}
+
+
+async def _prompt_again(p: "Player", text: str) -> None:
+    """Re-ask for a name (structured for web, ANSI for telnet)."""
+    if p.web:
+        await p.send(json.dumps({"t": "prompt", "text": text}))
+    else:
+        await p.send(c(AMBER, "\r\n" + text + " "))
 
 
 async def animate(p: Player, frames: list[list[str]], title: str, color: str = GOLD, hold: float = 0.5) -> None:
@@ -452,9 +543,13 @@ async def etch_class_rune(p: Player, spec: dict) -> None:
         STORE.etch_certificate, p.name, spec["class_id"], spec["rune"], spec["title"], p.wallet, block
     )
     p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+    old_level = p.level
     res = await asyncio.to_thread(STORE.add_xp, p.name, 100); p.xp, p.level = res["xp"], res["level"]
-    await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.0)
+    p.pending_fx.append("etch")                        # cue the web client to glow/particle the etch
+    await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.3)
     focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
+    if p.level > old_level:
+        p.pending_fx.append("levelup")
     push(p, c(GOLD, f"🎓 etched {spec['rune']}  (+100 xp)"))
 
 
@@ -633,8 +728,12 @@ def stats_json() -> dict:
     return {
         "uptime_s": int(time.time() - SERVER_START),
         "player_count": len(PLAYERS),
+        "world": WORLD,
         "players": [{
-            "name": p.name, "fren": p.fren_tag, "room": p.room,
+            "name": p.name, "fren": p.fren_tag, "world": WORLD, "room": p.room,
+            "client": "web" if p.web else "terminal", "module": "FREE PLAY",
+            "muted": p.muted, "watched": p.watched,
+            "timeout_s": max(0, int(p.timeout_until - time.time())),
             "uptime_s": int(time.time() - p.connected_at),
             "idle_s": int(time.time() - p.idle_since), "admin": p.is_admin,
         } for p in PLAYERS.values()],
@@ -642,11 +741,16 @@ def stats_json() -> dict:
         "store": {"backend": type(STORE).__name__, "location": getattr(STORE, "path", "postgres DB-2")},
         "oracle": ("local-llm:" + GEN_MODEL) if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted",
         "chat_matrix": CHAT_MATRIX,
+        "qa": {"flagged": sum(1 for f in _QA_FLAGS if f["status"] == "FLAGGED"),
+               "in_review": sum(1 for f in _QA_FLAGS if f["status"] == "IN REVIEW"),
+               "corrected": sum(1 for f in _QA_FLAGS if f["status"] == "CORRECTED"),
+               "latest": (_QA_FLAGS[-1]["topic"] if _QA_FLAGS else "")},
     }
 
 
 def stats_report() -> str:
     lines = ["P.O.K.E. MUD — operator stats",
+             f"  world       : {WORLD}",
              f"  uptime      : {_fmt_dur(time.time() - SERVER_START)}",
              f"  players     : {len(PLAYERS)} online"]
     for p in PLAYERS.values():
@@ -835,6 +939,23 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"relays": rl, "count": len(rl)})
         elif path == "/torrent":
             self._reply(200, torrent_status())
+        elif path == "/system/history":
+            win = 60
+            if "?" in self.path:
+                for kv in self.path.split("?", 1)[1].split("&"):
+                    if kv.startswith("window="):
+                        try:
+                            win = int(kv.split("=")[1])
+                        except Exception:
+                            pass
+            self._reply(200, system_history(win))
+        elif path == "/modules":
+            self._reply(200, {"modules": _MODULES})
+        elif path == "/sitelink":
+            self._reply(200, _SITELINK)
+        elif path.startswith("/players/") and path.endswith("/history"):
+            _, pl = _find_player(path[len("/players/"):-len("/history")])
+            self._reply(200, {"history": [_ANSI.sub("", x) for x in (pl.log if pl else [])]})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -871,6 +992,26 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         elif path == "/torrent":
             self._reply(200, {"ok": True, "result": torrent_control(
                 str(data.get("action", "status")), data.get("corpus_id"))})
+        elif path == "/mute":
+            self._reply(200, {"ok": True, "result": self._run(op_mute(
+                str(data.get("player", "")), bool(data.get("on", True)), str(data.get("reason", ""))))})
+        elif path == "/timeout":
+            self._reply(200, {"ok": True, "result": self._run(op_timeout(
+                str(data.get("player", "")), int(data.get("minutes", 5) or 5), str(data.get("reason", ""))))})
+        elif path == "/watch":
+            self._reply(200, {"ok": True, "result": self._run(op_watch(
+                str(data.get("player", "")), bool(data.get("on", True))))})
+        elif path == "/knowledge/flag":
+            _QA_FLAGS.append({"topic": data.get("topic", ""), "quote": data.get("quote", ""),
+                              "by": data.get("by", ""), "status": "FLAGGED"})
+            self._reply(200, {"ok": True, "result": "flagged"})
+        elif path == "/modules":
+            self._reply(200, {"ok": True, "result": "module save is stubbed — the Architect wires this next"})
+        elif path == "/sitelink":
+            _SITELINK["mode"] = "testing" if data.get("mode") == "testing" else "synced"
+            if data.get("url"):
+                _SITELINK["url"] = str(data.get("url"))
+            self._reply(200, {"ok": True, "result": _SITELINK["mode"]})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -933,8 +1074,7 @@ WRAITH = {
 # The Wraith flickers position/face across frames so it visibly MOVES during the encounter.
 WRAITH_ANIM = [
     ["", "  it is in two places at once...", "", "        .-~~~-.", "      (  x   x  )", "       \\   ^   /", "        '-...-'", ""],
-    ["", "  ...here...", "", "              .-~~~-.", "            (  x   x  )", "             \\   ^   /", "              '-...-'", ""],
-    ["", "  ...and not-here...", "", "    .-~~~-.", "  (  X   X  )", "   \\   >   /", "    '-...-'", ""],
+    ["", "  ...here, and not-here...", "", "    .-~~~-.", "  (  X   X  )", "   \\   >   /", "    '-...-'", ""],
     ["", "  \"which history is TRUE?\"", "", "         .-~~~-.", "       (  @   @  )", "        \\   O   /", "         '-...-'", ""],
 ]
 WRAITH_DEFEAT = [
@@ -946,7 +1086,7 @@ WRAITH_DEFEAT = [
 
 async def boss_open(p: Player) -> None:
     p.boss_pending = WRAITH["id"]
-    await animate(p, WRAITH_ANIM, WRAITH["name"], RED, hold=1.1)
+    await animate(p, WRAITH_ANIM, WRAITH["name"], RED, hold=1.3)
     focus_text(p, WRAITH["name"], ["", "  " + WRAITH["name"] + " rounds on you.", ""]
                + ["  " + l for l in _wrap(WRAITH["question"], BOARD_W - 6)]
                + ["", "  (answer with:  answer <your words>)"], RED)
@@ -955,16 +1095,24 @@ async def boss_open(p: Player) -> None:
 async def boss_judge(p: Player, ans: str) -> None:
     if any(k in ans.lower() for k in WRAITH["keys"]):
         p.boss_pending = None
-        await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " - defeated", GOLD, hold=1.1)
+        # Anti-farming: reward (XP + rune + energy) is granted ONCE — the first time you learn it.
+        already = await asyncio.to_thread(STORE.has_certificate, p.name, WRAITH["class"]["class_id"])
+        p.pending_fx.append("victory")                 # cue the web client's boss-defeat effect
+        await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " - defeated", GOLD, hold=1.3)
+        if already:
+            focus_text(p, "Victory", ["", "  The Wraith yields — but you've already mastered this truth.", "",
+                                      "  No XP for a lesson you already own, fren. Come back when there's a",
+                                      "  NEW boss with something new to teach. (Harder rematch questions and",
+                                      "  boss riddles are on the way — see docs/ROADMAP.md.)"], GOLD)
+            push(p, c(GREY, "already mastered — no farming"))
+            return
+        old_level = p.level
         res = await asyncio.to_thread(STORE.add_xp, p.name, WRAITH["xp"]); p.xp, p.level = res["xp"], res["level"]
         p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, 20)
-        push(p, c(GOLD, f"⚔ the Wraith unravels — +{WRAITH['xp']} xp"))
-        if not await asyncio.to_thread(STORE.has_certificate, p.name, WRAITH["class"]["class_id"]):
-            await etch_class_rune(p, WRAITH["class"])
-        else:
-            focus_text(p, "Victory", ["", "  The Double-Spend Wraith is undone.", "",
-                                      "  Proof-of-work is what makes bitcoin's history single and settled —",
-                                      "  rewriting it means out-working the whole network. You knew it."], GOLD)
+        if p.level > old_level:
+            p.pending_fx.append("levelup")
+        push(p, c(GOLD, f"the Wraith unravels  (+{WRAITH['xp']} xp)"))
+        await etch_class_rune(p, WRAITH["class"])
     else:
         p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, -15)
         p.boss_pending = WRAITH["id"]
@@ -1289,6 +1437,125 @@ def torrent_control(action: str, corpus_id=None) -> str:
     return f"{action} {corpus_id or 'all'} (queued; corpus service offline in dev)"
 
 
+# --- console: telemetry history + moderation + course/QA stubs ---------------
+_MHIST = {"cpu": deque(maxlen=90), "mem": deque(maxlen=90), "net": deque(maxlen=90)}
+_net_prev = {"t": 0.0, "total": 0}
+
+
+def _net_total_bytes():
+    try:
+        import psutil
+        io = psutil.net_io_counters()
+        return io.bytes_sent + io.bytes_recv
+    except Exception:
+        pass
+    if sys.platform.startswith("linux"):
+        try:
+            tot = 0
+            with open("/proc/net/dev") as f:
+                for ln in f:
+                    if ":" in ln:
+                        pr = ln.split(":")[1].split()
+                        tot += int(pr[0]) + int(pr[8])
+            return tot
+        except Exception:
+            pass
+    return None
+
+
+def _net_kbps() -> float:
+    tot = _net_total_bytes()
+    if tot is None:
+        return 0.0
+    now = time.time()
+    prev_t, prev = _net_prev["t"], _net_prev["total"]
+    _net_prev.update(t=now, total=tot)
+    if not prev_t:
+        return 0.0
+    return round(max(0.0, (tot - prev) / 1024 / max(0.001, now - prev_t)), 1)
+
+
+async def _metrics_sampler() -> None:
+    """Sample cpu/mem/net once a second into a ring for the console's micro-histograms."""
+    while not SHUTDOWN.is_set():
+        try:
+            m = await asyncio.to_thread(system_metrics)
+            ok = m.get("available")
+            _MHIST["cpu"].append(m.get("cpu_percent", 0.0) if ok else 0.0)
+            _MHIST["mem"].append(m.get("mem_percent", 0.0) if ok else 0.0)
+            _MHIST["net"].append(await asyncio.to_thread(_net_kbps))
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(SHUTDOWN.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+def system_history(window: int = 60) -> dict:
+    n = max(1, min(90, window))
+    return {k: [round(x, 1) for x in list(v)[-n:]] for k, v in _MHIST.items()}
+
+
+def _find_player(name: str):
+    key = name.lstrip("@").lower()
+    for w, pl in list(PLAYERS.items()):
+        if pl.name.lower() == key or (pl.fren_tag or "").lower() == key:
+            return w, pl
+    return None, None
+
+
+async def op_mute(name: str, on: bool, reason: str = "") -> str:
+    w, pl = _find_player(name)
+    if not pl:
+        return f"no player '{name}'"
+    pl.muted = bool(on)
+    if on:
+        push(pl, c(CYAN, "MUTED — your says stay local until an operator unmutes you. The Oracle still answers.")
+             + (c(GREY, f"  ({reason})") if reason else ""))
+    else:
+        push(pl, c(GREEN, "unmuted — say away, fren"))
+    try:
+        await show(pl)
+    except Exception:
+        pass
+    return f"{pl.name} {'muted' if on else 'unmuted'}"
+
+
+async def op_timeout(name: str, minutes: int, reason: str = "") -> str:
+    w, pl = _find_player(name)
+    if not pl:
+        return f"no player '{name}'"
+    pl.timeout_until = time.time() + max(1, int(minutes)) * 60
+    push(pl, c(GOLD, f"TIMEOUT — {int(minutes)}:00. Your seat and progress are safe; chat re-opens at zero.")
+         + (c(GREY, f"  ({reason})") if reason else ""))
+    try:
+        await show(pl)
+    except Exception:
+        pass
+    return f"{pl.name} timed out {int(minutes)}m"
+
+
+async def op_watch(name: str, on: bool) -> str:
+    w, pl = _find_player(name)
+    if not pl:
+        return f"no player '{name}'"
+    pl.watched = bool(on)
+    return f"{'watching' if on else 'unwatched'} {pl.name}"
+
+
+# Course modules + knowledge QA are the Architect's/Warden's — stubbed until wired (see ROADMAP).
+_QA_FLAGS: list = []
+_MODULES = [
+    {"lvl": 1, "code": "BTC101", "name": "Bitcoin Self-Custody", "path": "BITCOIN › CUSTODY",
+     "prereq": "", "rune": "PACS•ARCADE•BTC101", "access": "OPEN"},
+    {"lvl": 2, "code": "CONSENSUS", "name": "Bitcoin Consensus", "path": "BITCOIN › CONSENSUS",
+     "prereq": "BTC101", "rune": "PACS•ARCADE•CONSENSUS", "access": "AFTER BTC101"},
+]
+_SITELINK = {"mode": "testing" if LOCAL_SITE_URL else "synced",
+             "url": LOCAL_SITE_URL or "https://pacsarcade.org"}
+
+
 # --- command dispatch --------------------------------------------------------
 DIRS = {"north", "south", "east", "west", "up", "down"}
 DIR_ALIAS = {"n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down"}
@@ -1310,6 +1577,11 @@ async def dispatch(p: Player, line: str) -> bool:
     rest = rest.strip()
     p.idle_since = time.time()
 
+    # Operator timeout: benched except for quit/look/help.
+    if p.timeout_until > time.time() and verb not in ("quit", "exit", "q", "look", "l", "help", "?"):
+        push(p, c(GOLD, f"you're benched — {int(p.timeout_until - time.time())}s left. seat + progress safe."))
+        return True
+
     # While a question is pending, most input IS the answer — so "proof of work" is judged even
     # if it starts with a command word like 'i' (inventory). A few meta verbs still work mid-question.
     if (p.boss_pending or p.oracle_pending) and verb not in (
@@ -1321,7 +1593,19 @@ async def dispatch(p: Player, line: str) -> bool:
         return True
 
     if verb in ("quit", "exit", "q"):
-        await p.send(CLEAR + c(MAG, "The cabinets dim. Come back soon, fren. 💜\r\n"))
+        gained = p.xp - p.session_start_xp
+        new_runes = len(p.certs) - p.session_start_runes
+        lines = [
+            f"Goodnight, {display_name(p)}.",
+            "This session: +" + str(gained) + " xp" + (f", +{new_runes} rune(s)" if new_runes > 0 else "") + ".",
+            f"You're Level {p.level} · {p.xp} xp · {len(p.certs)} rune(s).",
+            "Come back and we'll pick up right where you left off. 💜",
+        ]
+        if p.web:
+            await p.send(json.dumps({"t": "bye", "lines": lines,
+                                     "summary": {"xp": p.xp, "level": p.level, "runes": len(p.certs), "gained": gained}}))
+        else:
+            await p.send(CLEAR + c(MAG, "\r\n  " + "\r\n  ".join(lines) + "\r\n"))
         return False
     if verb in ("help", "?", "commands"):
         focus_text(p, "How to play", HELP_LINES, GREY)
@@ -1378,10 +1662,13 @@ async def dispatch(p: Player, line: str) -> bool:
     elif verb == "say":
         if rest:
             who = f"@{p.fren_tag}" if p.fren_tag else p.name
-            push(p, c(GREEN, "you say: ") + c(BOLD, rest) + (c(GREY, "  (→ matrix)") if CHAT_MATRIX else ""))
-            await broadcast_room(p.room, c(CYAN, f"{who} says: ") + c(BOLD, rest), exclude=p)
-            if CHAT_MATRIX:
-                asyncio.create_task(forward_chat_to_matrix(p.room, who, rest))
+            if p.muted:                                   # muted: your says stay local
+                push(p, c(GREEN, "you say: ") + c(BOLD, rest) + c(GREY, "  (muted — local only)"))
+            else:
+                push(p, c(GREEN, "you say: ") + c(BOLD, rest) + (c(GREY, "  (→ matrix)") if CHAT_MATRIX else ""))
+                await broadcast_room(p.room, c(CYAN, f"{who} says: ") + c(BOLD, rest), exclude=p)
+                if CHAT_MATRIX:
+                    asyncio.create_task(forward_chat_to_matrix(p.room, who, rest))
         else:
             push(p, c(GREY, "say what?"))
     elif verb in ("certs", "runes", "certificates"):
@@ -1447,24 +1734,58 @@ def clean_line(raw: bytes) -> str:
     return out.decode("utf-8", "replace").strip()
 
 
-async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, web: bool = False) -> None:
     p = Player(writer)
+    p.web = web
     PLAYERS[writer] = p
     try:
-        await p.send(RESIZE)
-        for col in SHIMMER:                       # the banner glimmers on login ✨
-            await p.send(CLEAR + make_banner(col))
-            await asyncio.sleep(0.16)
-        await p.send(c(AMBER, "\nBy what name shall the arcade know you, fren? "))
-        raw = await reader.readline()
-        name = clean_line(raw)
-        if name:
+        if web:
+            # The browser renders its own (magical) login; just hand it the node info + a name prompt.
+            await p.send(json.dumps({"t": "hello", "node": os.environ.get("PA_NODE_NAME", "a POKE node"),
+                                     "site": LOCAL_SITE_URL,
+                                     "prompt": "By what name shall the arcade know you, fren?"}))
+        else:
+            await p.send(RESIZE)
+            for col in SHIMMER:                       # the banner glimmers on login ✨
+                await p.send(CLEAR + make_banner(col))
+                await asyncio.sleep(0.16)
+            await p.send(c(AMBER, "\nBy what name shall the arcade know you, fren? "))
+        # --- name entry: reject command words as names (so no one is called "help"/"quit") ---
+        for _ in range(4):
+            raw = await reader.readline()
+            if not raw and reader.at_eof():
+                return
+            name = clean_line(raw)
+            if not name:
+                await _prompt_again(p, "a name, fren?")
+                continue
+            if name.lower() in RESERVED_NAMES:
+                await _prompt_again(p, f"'{name}' is a command, not a name — pick another, fren.")
+                continue
             p.name = name[:24]
+            break
+        else:
+            p.name = "a wandering fren"
+
+        # --- one live session per player: take over any existing one (fixes multi-device divergence) ---
+        for w2, other in list(PLAYERS.items()):
+            if other is not p and other.name == p.name:
+                try:
+                    if other.web:
+                        await other.send(json.dumps({"t": "signout", "text": "You signed in on another device."}))
+                    else:
+                        await other.send(c(RED, "\r\n-- you signed in on another device; this session is closed --\r\n"))
+                    w2.close()
+                except Exception:
+                    pass
+                PLAYERS.pop(w2, None)
+
         data = await asyncio.to_thread(STORE.get_or_create_player, p.name)
         p.room, p.inventory, p.wallet = data["room"], data["inventory"], data["wallet"]
         p.nostr, p.space, p.fren_tag = data["nostr"], data["space"], data["fren_tag"]
         p.xp, p.level, p.energy = data["xp"], data["level"], data["energy"]
         p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+        p.session_start_xp, p.session_start_runes = p.xp, len(p.certs)
         hello = f"@{p.fren_tag}" if p.fren_tag else p.name
 
         p.in_game = True
@@ -1480,9 +1801,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             else:
                 focus_room(p)
         else:
-            note = f" You carry {len(p.certs)} rune(s)." if p.certs else ""
-            push(p, c(MAG, f"Welcome back, {hello}.{note} Your progress was kept. 💜"))
-            focus_room(p)
+            # Welcome back with a summary + a nudge toward next goals.
+            focus_text(p, f"Welcome back, {hello}", [
+                "",
+                f"  Level {p.level} · {p.xp} xp · {len(p.certs)} rune(s) · energy {p.energy}/100",
+                f"  Last seen in: {ROOMS[p.room]['title']}",
+                "",
+                "  Good to see you, fren. What would you like to work on next?",
+                "  Ask the Oracle (north), face a boss (down), or just  look  around.",
+                "",
+            ], AMBER)
+            push(p, c(MAG, f"Welcome back, {hello}. Your progress was kept."))
         await broadcast_room(p.room, c(GREY, f"{hello} steps in from the street."), exclude=p)
         await show(p)
 
@@ -1519,7 +1848,7 @@ async def _ws_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter)
         except Exception:
             pass
         return
-    await handle_client(webbridge.WSReader(reader, writer), webbridge.WSWriter(writer))
+    await handle_client(webbridge.WSReader(reader, writer), webbridge.WSWriter(writer), web=True)
 
 
 async def main() -> None:
@@ -1538,6 +1867,7 @@ async def main() -> None:
     http_srv = _start_admin_http()
     _start_console(LOOP)
     ticker = asyncio.create_task(_status_ticker())
+    sampler = asyncio.create_task(_metrics_sampler())      # feeds the console's CPU/MEM/NET histograms
     tok_note = "  (auto-generated; set PA_ADMIN_TOKEN to pin it)" if ADMIN_TOKEN_GENERATED else ""
     print("  Operator console: type 'help' here.")
     print(f"    admin token : {ADMIN_TOKEN}{tok_note}   (in-MUD: 'admin {ADMIN_TOKEN}')")
@@ -1552,6 +1882,7 @@ async def main() -> None:
             await SHUTDOWN.wait()
     finally:
         ticker.cancel()
+        sampler.cancel()
         for w, pl in list(PLAYERS.items()):
             try:
                 await pl.send(c(MAG, "\r\nThe arcade lights power down. Your progress is saved. 💜\r\n"))

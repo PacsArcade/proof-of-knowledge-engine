@@ -5,129 +5,186 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>POKEMUD — play in your browser</title>
 <!--
-  POKEMUD web client (v1). Self-contained, no external assets. Connects over a WebSocket to the
-  same POKEMUD engine the telnet client uses, and renders the server's ANSI redraws with a tiny
-  in-browser interpreter + a CRT theme. This is a clean canvas — the site/design team can restyle
-  it freely. Richer effects (canvas glow, sound, asciify) come with the server's JSON render mode.
+  POKEMUD web client (v2 — JSON render mode). Self-contained, no external assets. Connects over a
+  WebSocket to the POKE engine, which sends STRUCTURED screen state (not ANSI), so this page renders
+  the game as real UI with real effects. This is the seam for the login/experience overhaul — the
+  design team can restyle everything below freely; the JSON protocol (t:"hello" / t:"screen") is the
+  contract with the server (services/mud/server.py :: screen_model).
 -->
 <style>
-  :root { --phos:#39ff9e; --amber:#ffbe3c; --mag:#ff35c8; --bg:#05060a; }
-  * { box-sizing:border-box; }
-  html,body { margin:0; height:100%; background:var(--bg); color:var(--phos);
-    font-family: "Cascadia Mono","DejaVu Sans Mono",Consolas,monospace; }
-  #wrap { display:flex; flex-direction:column; height:100%; }
-  header { display:flex; align-items:center; gap:.75rem; padding:.4rem .8rem;
-    border-bottom:1px solid #1c2130; background:linear-gradient(#0b0e16,#070910); }
-  header .brand { color:var(--mag); font-weight:bold; letter-spacing:.05em; text-shadow:0 0 8px #ff35c880; }
-  header .sub { color:#8a93a6; font-size:.85rem; }
-  header .spacer { flex:1; }
-  header a, header .dot { color:var(--amber); text-decoration:none; font-size:.85rem; }
-  #dot { width:.6rem; height:.6rem; border-radius:50%; background:#556; display:inline-block; box-shadow:0 0 6px #000; }
-  #dot.on { background:var(--phos); box-shadow:0 0 8px var(--phos); }
-  #screenwrap { position:relative; flex:1; overflow:auto; padding:.6rem .8rem; }
-  /* CRT scanlines + vignette overlay */
-  #screenwrap::after { content:""; position:fixed; inset:0; pointer-events:none;
-    background:
-      repeating-linear-gradient(rgba(0,0,0,0) 0 2px, rgba(0,0,0,.18) 2px 3px),
-      radial-gradient(120% 120% at 50% 50%, rgba(0,0,0,0) 60%, rgba(0,0,0,.55)); }
-  pre#screen { margin:0; white-space:pre; font-size:15px; line-height:1.18;
-    text-shadow:0 0 3px currentColor; }
-  footer { display:flex; gap:.5rem; padding:.5rem .8rem; border-top:1px solid #1c2130; background:#070910; }
-  #cmd { flex:1; background:#0b0e16; color:var(--phos); border:1px solid #223; border-radius:6px;
-    padding:.5rem .7rem; font-family:inherit; font-size:15px; outline:none; }
-  #cmd:focus { border-color:var(--mag); box-shadow:0 0 0 2px #ff35c830; }
-  #send { background:var(--mag); color:#0b0e16; border:0; border-radius:6px; padding:0 1rem; font-weight:bold; cursor:pointer; }
-  #hint { color:#67708a; font-size:.8rem; padding:0 .8rem .4rem; }
-  @media (max-width:640px){ pre#screen{ font-size:12px; } header .sub{ display:none; } }
+  :root{
+    --bg:#05060a; --panel:#0b0e16; --ink:#cdd6ea; --dim:#6b7690; --line:#1b2233;
+    --green:#39ff9e; --amber:#ffbe3c; --cyan:#39e6ff; --magenta:#ff35c8; --grey:#9aa6bd;
+    --red:#ff5a5a; --gold:#ffd24a; --accent:var(--green);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:radial-gradient(120% 120% at 50% 0%,#0a0e18,#04050a 70%);
+    color:var(--ink);font-family:"Cascadia Mono","DejaVu Sans Mono",Consolas,monospace}
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:50;
+    background:repeating-linear-gradient(rgba(0,0,0,0) 0 2px,rgba(0,0,0,.16) 2px 3px),
+    radial-gradient(120% 120% at 50% 45%,rgba(0,0,0,0) 58%,rgba(0,0,0,.6))}
+  #app{max-width:820px;margin:0 auto;min-height:100%;display:flex;flex-direction:column;padding:.6rem}
+  .top{display:flex;align-items:center;gap:.6rem;padding:.3rem .4rem}
+  .brand{color:var(--magenta);font-weight:bold;letter-spacing:.06em;text-shadow:0 0 10px #ff35c870}
+  .top .sub{color:var(--dim);font-size:.82rem}
+  .spacer{flex:1}
+  .top a{color:var(--amber);text-decoration:none;font-size:.85rem}
+  #dot{width:.6rem;height:.6rem;border-radius:50%;background:#445;box-shadow:0 0 6px #000}
+  #dot.on{background:var(--green);box-shadow:0 0 9px var(--green)}
+
+  /* ---- login ---- */
+  #login{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.4rem}
+  #login .marquee{color:var(--dim);letter-spacing:.3em;font-size:.8rem}
+  #login h1{margin:.2rem 0;font-size:clamp(1.6rem,7vw,3rem);letter-spacing:.18em;
+    background:linear-gradient(90deg,var(--gold),var(--cyan),var(--magenta),var(--gold));
+    background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
+    animation:glim 4s linear infinite;text-shadow:0 0 30px #ff35c840}
+  @keyframes glim{to{background-position:300% 0}}
+  #login .tag{color:var(--amber)} #login .node{color:var(--dim);font-size:.85rem}
+  #login .oracle{color:var(--grey);max-width:34rem;font-size:.9rem;line-height:1.5;margin:.6rem 0}
+  #login.hidden{display:none}
+
+  /* ---- game ---- */
+  #game{flex:1;display:none;flex-direction:column;gap:.5rem}
+  #game.show{display:flex}
+  .hud{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;font-size:.85rem;color:var(--dim)}
+  .hud b{color:var(--gold)} .chip{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:.15rem .6rem}
+  .bar{display:inline-block;width:90px;height:.5rem;background:#141a28;border-radius:5px;overflow:hidden;vertical-align:middle}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--green))}
+  .energy>i{background:linear-gradient(90deg,#ff7a5a,var(--green))}
+  .panel{position:relative;border:1px solid var(--accent);border-radius:12px;background:linear-gradient(#0a0e17,#070a11);
+    box-shadow:0 0 0 1px #0006,0 0 24px -6px var(--accent);padding:1rem 1.1rem;min-height:16rem}
+  .panel .title{position:absolute;top:-.72rem;left:1rem;background:var(--bg);padding:0 .5rem;color:var(--accent);
+    text-shadow:0 0 10px var(--accent);font-size:.9rem;letter-spacing:.04em}
+  .panel pre{margin:0;white-space:pre-wrap;word-break:break-word;color:var(--ink);
+    font-size:15px;line-height:1.35;text-shadow:0 0 3px #0008}
+  .exits{display:flex;gap:.4rem;flex-wrap:wrap}
+  .door{cursor:pointer;user-select:none;background:var(--panel);border:1px solid var(--accent);color:var(--accent);
+    border-radius:8px;padding:.25rem .6rem;font-size:.85rem;text-shadow:0 0 8px var(--accent)}
+  .door:hover{background:var(--accent);color:#06070c}
+  .log{min-height:2.2rem;color:var(--grey);font-size:.85rem;line-height:1.5}
+  .log div{opacity:.9}
+  footer{display:flex;gap:.5rem;padding:.5rem .3rem 0}
+  #cmd{flex:1;background:var(--panel);color:var(--green);border:1px solid #243;border-radius:9px;padding:.55rem .8rem;
+    font-family:inherit;font-size:15px;outline:none}
+  #cmd:focus{border-color:var(--magenta);box-shadow:0 0 0 2px #ff35c830}
+  #send{background:var(--magenta);color:#06070c;border:0;border-radius:9px;padding:0 1.1rem;font-weight:bold;cursor:pointer}
+
+  /* ---- effects ---- */
+  @keyframes etchpulse{0%,100%{box-shadow:0 0 24px -6px var(--gold)}50%{box-shadow:0 0 60px 4px var(--gold)}}
+  .fx-etch{animation:etchpulse .5s ease-in-out 3}
+  @keyframes shake{10%,90%{transform:translateX(-2px)}30%,70%{transform:translateX(4px)}50%{transform:translateX(-6px)}}
+  .fx-victory{animation:shake .5s 2}
+  #toast{position:fixed;left:50%;top:22%;transform:translateX(-50%);z-index:60;pointer-events:none;
+    background:linear-gradient(#1a1330,#0b0a1c);border:1px solid var(--gold);color:var(--gold);
+    padding:.6rem 1.4rem;border-radius:12px;font-weight:bold;letter-spacing:.08em;text-shadow:0 0 14px var(--gold);
+    box-shadow:0 0 40px -8px var(--gold);opacity:0;transition:opacity .3s}
+  #toast.show{opacity:1}
+  #end{display:none;flex:1;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.4rem;color:var(--gold)}
+  #end #endmsg div{margin:.25rem 0;font-size:1.05rem;text-shadow:0 0 12px var(--gold)}
+  #end a{color:var(--amber);text-decoration:none}
+  @media (max-width:560px){.panel{min-height:13rem}.top .sub{display:none}}
 </style>
 </head>
 <body>
-<div id="wrap">
-  <header>
-    <span class="brand">◆ POKEMUD</span>
-    <span class="sub">Proof of Knowledge Engine · play in your browser</span>
-    <span class="spacer"></span>
-    <span id="site"></span>
-    <span id="dot" title="connection"></span>
-  </header>
-  <div id="screenwrap"><pre id="screen">connecting to the arcade…</pre></div>
-  <div id="hint">type below and press Enter · try <b>help</b> · <b>talk oracle</b> · <b>go down</b> to the boss</div>
-  <footer>
+<div id="app">
+  <div class="top">
+    <span class="brand">◆ POKEMUD</span><span class="sub">Proof of Knowledge Engine</span>
+    <span class="spacer"></span><span id="site"></span><span id="dot" title="connection"></span>
+  </div>
+
+  <section id="login">
+    <div class="marquee">PAC'S ARCADE</div>
+    <div class="marquee" style="margin-top:-.2rem">presents</div>
+    <h1>P O K E M U D</h1>
+    <div class="tag">Proof of Knowledge Engine</div>
+    <div class="node" id="node"></div>
+    <div class="oracle">"I don't hand out answers — I trade in questions. Show me you truly understand a
+      thing, and I'll etch it into a rune only you can carry. Insert a token, fren."</div>
+    <div class="node">↓ name yourself below to begin ↓</div>
+  </section>
+
+  <section id="game">
+    <div class="hud" id="hud"></div>
+    <div class="panel" id="panel"><div class="title" id="ptitle"></div><pre id="body"></pre></div>
+    <div class="exits" id="exits"></div>
+    <div class="log" id="log"></div>
+  </section>
+
+  <section id="end">
+    <div id="endmsg"></div>
+    <div style="margin-top:1rem"><button id="again" class="door">▸ play again</button> <span id="endsite"></span></div>
+  </section>
+
+  <footer id="foot">
     <input id="cmd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-           placeholder="name yourself, then type commands…" />
+           placeholder="name yourself…">
     <button id="send">Send ⏎</button>
   </footer>
 </div>
+<div id="toast"></div>
 <script>
 (() => {
-  const screenEl = document.getElementById('screen');
-  const cmd = document.getElementById('cmd');
-  const dot = document.getElementById('dot');
-  const siteEl = document.getElementById('site');
-  let ws = null, buffer = '';
+  const $ = id => document.getElementById(id);
+  const THEME = {green:'#39ff9e',amber:'#ffbe3c',cyan:'#39e6ff',magenta:'#ff35c8',grey:'#9aa6bd',red:'#ff5a5a',gold:'#ffd24a'};
+  const ARROW = {north:'▲ north',south:'▼ south',east:'► east',west:'◄ west',up:'↑ up',down:'↓ down'};
+  let ws=null, named=false, done=false, endSite='';
 
-  // xterm-256 → CSS color (matches the server's \x1b[38;5;Nm palette exactly).
-  const STD = ['#000','#c00','#0c0','#cc0','#00c','#c0c','#0cc','#ccc',
-               '#555','#f55','#5f5','#ff5','#55f','#f5f','#5ff','#fff'];
-  function xterm(n){
-    if(n<16) return STD[n];
-    if(n<232){ n-=16; const r=(n/36|0), g=((n%36)/6|0), b=n%6, c=v=>v?55+v*40:0;
-      return `rgb(${c(r)},${c(g)},${c(b)})`; }
-    const v=8+(n-232)*10; return `rgb(${v},${v},${v})`;
+  function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
+  function fx(list){ if(!list||!list.length) return; const panel=$('panel');
+    if(list.includes('etch')){ panel.classList.remove('fx-etch'); void panel.offsetWidth; panel.classList.add('fx-etch'); }
+    if(list.includes('victory')){ panel.classList.remove('fx-victory'); void panel.offsetWidth; panel.classList.add('fx-victory'); }
+    if(list.includes('levelup')) toast('★ LEVEL UP ★');
   }
-  // Convert an ANSI string to HTML: honor \x1b[0m/1m and \x1b[38;5;Nm; strip cursor/clear codes.
-  function ansiToHtml(text){
-    text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const re = /\x1b\[([0-9;]*)([A-Za-z])/g;
-    let out='', last=0, m, color=null, bold=false;
-    const span = t => { if(!t) return ''; const s=[]; if(color)s.push('color:'+color);
-      if(bold)s.push('font-weight:bold'); return s.length?`<span style="${s.join(';')}">${t}</span>`:t; };
-    while((m = re.exec(text))){
-      out += span(text.slice(last, m.index));
-      last = re.lastIndex;
-      if(m[2] === 'm'){
-        const codes = m[1].split(';').filter(x=>x!=='').map(Number);
-        if(codes.length===0){ color=null; bold=false; }
-        for(let j=0;j<codes.length;j++){
-          const c=codes[j];
-          if(c===0){ color=null; bold=false; }
-          else if(c===1){ bold=true; }
-          else if(c===38 && codes[j+1]===5){ color=xterm(codes[j+2]); j+=2; }
-          else if(c===39){ color=null; }
-        }
-      } // any other final byte (H,J,K,t) → stripped (full-frame redraw handles it)
-    }
-    out += span(text.slice(last));
-    return out;
+  function renderScreen(m){
+    if(!named){ named=true; $('login').classList.add('hidden'); $('game').classList.add('show'); $('cmd').placeholder='type a command…'; }
+    const accent = THEME[m.color] || THEME.green;
+    document.documentElement.style.setProperty('--accent', accent);
+    const h=m.hud||{};
+    $('hud').innerHTML =
+      `<span class="chip">Lv <b>${h.level??1}</b></span>`+
+      `<span class="chip">✦ ${h.xp??0} xp <span class="bar"><i style="width:${(h.xp_into??0)}%"></i></span></span>`+
+      `<span class="chip">🎓 <b>${h.runes??0}</b></span>`+
+      `<span class="chip energy">⚡ <span class="bar"><i style="width:${(h.energy??100)}%"></i></span></span>`+
+      `<span class="spacer"></span><span class="chip">${m.who||''} · ${m.room||''}</span>`;
+    $('ptitle').textContent = m.title||m.room||'';
+    $('body').textContent = (m.body||[]).join('\n');
+    $('exits').innerHTML='';
+    (m.exits||[]).forEach(d=>{ const el=document.createElement('div'); el.className='door'; el.textContent=ARROW[d]||d;
+      el.onclick=()=>sendCmd(d); $('exits').appendChild(el); });
+    $('log').innerHTML = (m.log||[]).filter(x=>x.trim()).map(x=>`<div>${escapeHtml(x)}</div>`).join('');
+    fx(m.fx);
   }
-  function render(){
-    // Keep only from the last clear/home = the current full screen the server drew.
-    const cut = Math.max(buffer.lastIndexOf('\x1b[2J'), buffer.lastIndexOf('\x1b[H'));
-    if(cut > 0) buffer = buffer.slice(cut);
-    screenEl.innerHTML = ansiToHtml(buffer);
-  }
+  function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
   async function connect(){
-    let cfg = { ws_port: 4002, local_site:'', node:'a POKE node' };
-    try { cfg = await (await fetch('/config')).json(); } catch(e){}
-    if(cfg.local_site) siteEl.innerHTML = `<a href="${cfg.local_site}">← the arcade</a> · `;
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.hostname}:${cfg.ws_port}`;
-    ws = new WebSocket(url);
-    ws.onopen  = () => { dot.classList.add('on'); buffer=''; cmd.focus(); };
-    ws.onmessage = (e) => { buffer += e.data; render();
-      document.getElementById('screenwrap').scrollTop = 1e9; };
-    ws.onclose = () => { dot.classList.remove('on');
-      buffer += '\r\n\x1b[38;5;196m-- the arcade lights went dark. reconnecting… --\x1b[0m\r\n'; render();
-      setTimeout(connect, 1500); };
-    ws.onerror = () => { try{ ws.close(); }catch(e){} };
+    let cfg={ws_port:4002,local_site:'',node:'a POKE node'};
+    try{ cfg=await (await fetch('/config')).json(); }catch(e){}
+    if(cfg.local_site){ endSite=cfg.local_site; $('site').innerHTML=`<a href="${cfg.local_site}">← the arcade</a> · `; }
+    const proto = location.protocol==='https:'?'wss':'ws';
+    ws=new WebSocket(`${proto}://${location.hostname}:${cfg.ws_port}`);
+    ws.onopen=()=>{ $('dot').classList.add('on'); $('cmd').focus(); };
+    ws.onmessage=(e)=>{ let m; try{ m=JSON.parse(e.data); }catch(_){ return; }
+      if(m.t==='hello'){ if(m.node) $('node').textContent='· '+m.node+' ·'; }
+      else if(m.t==='prompt'){ $('node').textContent = m.text||''; }
+      else if(m.t==='screen'){ renderScreen(m); }
+      else if(m.t==='bye'){ done=true; showEnd(m.lines||['Goodnight, fren.']); }
+      else if(m.t==='signout'){ done=true; showEnd([m.text||'Signed out.','You opened POKEMUD on another device.']); }
+    };
+    ws.onclose=()=>{ $('dot').classList.remove('on'); if(done) return; toast('reconnecting…'); setTimeout(connect,1500); };
+    ws.onerror=()=>{ try{ ws.close(); }catch(e){} };
   }
-  function send(){
-    const v = cmd.value; cmd.value='';
-    if(ws && ws.readyState === 1) ws.send(v);
+  function showEnd(lines){
+    $('login').classList.add('hidden'); $('game').classList.remove('show'); $('foot').style.display='none';
+    $('end').style.display='flex';
+    $('endmsg').innerHTML = lines.map(l=>`<div>${escapeHtml(l)}</div>`).join('');
+    $('endsite').innerHTML = endSite ? ` · <a href="${endSite}">back to the arcade</a>` : '';
+    $('again').onclick=()=>location.reload();
   }
-  document.getElementById('send').onclick = send;
-  cmd.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); send(); } });
+  function sendCmd(v){ if(ws&&ws.readyState===1) ws.send(v); }
+  function submit(){ const v=$('cmd').value; $('cmd').value=''; sendCmd(v); }
+  $('send').onclick=submit;
+  $('cmd').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); }});
   connect();
 })();
 </script>
