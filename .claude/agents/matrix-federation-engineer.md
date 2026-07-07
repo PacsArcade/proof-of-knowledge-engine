@@ -26,4 +26,14 @@ Read `docs/CONVENTIONS.md` first. You own the **COLD tier** comms: the `matrix` 
 - Quarantine alerts land in the encrypted admin room.
 - Two local Verses can federate a room.
 
+## Current tasks (P.O.K.E. roadmap · 2026-07-07)
+Landed: optional in-MUD `say` → Matrix relay (off by default, COLD, off the hot path).
+Next:
+- Provision the federated **#backroom** (`#backroom:<homeserver>`) across operator homeservers; post
+  **watch flags + cheat signatures + incident calls** there (the console mirrors these client-side
+  today — make them real). Back the "OPEN THE BACKROOM IN MATRIX" deep link.
+- Back the console's **branded operator DMs** — kick / timeout / mute messages delivered to a fren's
+  linked nostr/matrix, not just in-MUD text.
+- Operator homeserver federation for the backroom.
+
 Coordinate cross-scope changes via `.claude/rules/cross-agent-protocol.md`.

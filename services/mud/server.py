@@ -137,22 +137,20 @@ BANNER = make_banner()
 # Colors the title cycles through on login so PAC'S ARCADE / POKEMUD glimmers.
 SHIMMER = [BOLD + GOLD, BOLD + CYAN, BOLD + MAG, BOLD + AMBER, BOLD + GREEN, BOLD + GOLD]
 
+# Kept to <=12 lines and <=68 cols each so it never overflows the framed window.
 HELP_LINES = [
-    "How to play:",
     "",
-    "  look (l)              look around the room",
-    "  north/south/east/west go through a door  (also n/s/e/w)",
-    "  talk oracle           speak with the Oracle (it asks; you answer)",
-    "  answer <text>         answer the Oracle or a boss  ·  ask oracle <q>",
-    "  challenge             face the boss (the dungeon is  down  from entrance)",
-    "  pull lever            operate a feature in the room",
-    "  stats                 your attributes  ·  examine <name>  see a fren",
-    "  link fren <name>      claim your @fren + get a code to link it",
-    "  verify <code> · backup  confirm your @fren · anchor progress on-chain",
-    "  profile · certs · inventory · who · say <msg>",
+    "  Move:  north south east west up down    (n/s/e/w shortcuts)",
+    "  look (l) ....... look around the room",
+    "  talk oracle .... speak with the Oracle   ·   answer <text>",
+    "  ask oracle <q>    challenge    (the boss is 'down' from here)",
+    "  pull lever ..... use a feature in the room",
+    "  stats / examine <name>    your attributes / see a fren",
+    "  link fren <name>    verify <code>    backup    (identity)",
+    "  profile · certs · inventory · who · say <msg> · quit",
     "",
-    "  You don't have to be exact — just type naturally. 'sup' to the Oracle,",
-    "  'go down', 'who's the boss' all work. The game figures it out.",
+    "  Type naturally - 'sup', 'go down', 'who's the boss' all work.",
+    "",
 ]
 
 
@@ -353,7 +351,7 @@ def _frame(title: str, body: list[str], exits: dict, color: str) -> list[str]:
     if "south" in exits:
         bot[W // 2] = "▼"; bdoors.add(W // 2)
     if "down" in exits:
-        for j, ch in enumerate("▼dn"):
+        for j, ch in enumerate("▼down"):
             bot[W - 7 + j] = ch; bdoors.add(W - 7 + j)
     out.append(c(MAG, "╚") + _render_border(bot, bdoors) + c(MAG, "╝"))
     return out
@@ -949,6 +947,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
                         except Exception:
                             pass
             self._reply(200, system_history(win))
+        elif path == "/block":
+            self._reply(200, block_height())
         elif path == "/modules":
             self._reply(200, {"modules": _MODULES})
         elif path == "/sitelink":
@@ -1008,9 +1008,12 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         elif path == "/modules":
             self._reply(200, {"ok": True, "result": "module save is stubbed — the Architect wires this next"})
         elif path == "/sitelink":
-            _SITELINK["mode"] = "testing" if data.get("mode") == "testing" else "synced"
+            if "mode" in data:
+                _SITELINK["mode"] = "testing" if data.get("mode") == "testing" else "synced"
             if data.get("url"):
                 _SITELINK["url"] = str(data.get("url"))
+            if data.get("site"):
+                _SITELINK["site"] = str(data.get("site"))
             self._reply(200, {"ok": True, "result": _SITELINK["mode"]})
         else:
             self._reply(404, {"error": "not found"})
@@ -1497,6 +1500,40 @@ def system_history(window: int = 60) -> dict:
     return {k: [round(x, 1) for x in list(v)[-n:]] for k, v in _MHIST.items()}
 
 
+_BLOCK_CACHE = {"t": 0.0, "height": None, "source": ""}
+
+
+def block_height() -> dict:
+    """Best-effort current Bitcoin block height for the console — local-first.
+    Point PA_BITCOIN_REST_URL at your node's REST (bitcoind -rest=1), or PA_BITCOIN_RPC_URL
+    (+ PA_BITCOIN_RPC_AUTH 'user:pass'), or set PA_BLOCK_HEIGHT for a fixed display. Cached 15s."""
+    now = time.time()
+    if now - _BLOCK_CACHE["t"] < 15 and _BLOCK_CACHE["height"] is not None:
+        return {"height": _BLOCK_CACHE["height"], "source": _BLOCK_CACHE["source"]}
+    height, source = _BLOCK_CACHE["height"], _BLOCK_CACHE["source"]   # keep last-known on error
+    env, rest, rpc = (os.environ.get(k, "") for k in ("PA_BLOCK_HEIGHT", "PA_BITCOIN_REST_URL", "PA_BITCOIN_RPC_URL"))
+    try:
+        if env.strip().isdigit():
+            height, source = int(env.strip()), "env"
+        elif rest:
+            with urllib.request.urlopen(rest.rstrip("/") + "/rest/chaininfo.json", timeout=2) as r:
+                height, source = int(json.loads(r.read())["blocks"]), "bitcoin-rest"
+        elif rpc:
+            body = json.dumps({"jsonrpc": "1.0", "id": "poke", "method": "getblockcount", "params": []}).encode()
+            req = urllib.request.Request(rpc, data=body, headers={"Content-Type": "text/plain"})
+            auth = os.environ.get("PA_BITCOIN_RPC_AUTH", "")
+            if auth:
+                import base64
+                req.add_header("Authorization", "Basic " + base64.b64encode(auth.encode()).decode())
+            with urllib.request.urlopen(req, timeout=2) as r:
+                height, source = int(json.loads(r.read())["result"]), "bitcoin-rpc"
+    except Exception:
+        pass
+    if height is not None:
+        _BLOCK_CACHE.update(t=now, height=height, source=source)
+    return {"height": height, "source": source}
+
+
 def _find_player(name: str):
     key = name.lstrip("@").lower()
     for w, pl in list(PLAYERS.items()):
@@ -1553,7 +1590,8 @@ _MODULES = [
      "prereq": "BTC101", "rune": "PACS•ARCADE•CONSENSUS", "access": "AFTER BTC101"},
 ]
 _SITELINK = {"mode": "testing" if LOCAL_SITE_URL else "synced",
-             "url": LOCAL_SITE_URL or "https://pacsarcade.org"}
+             "url": LOCAL_SITE_URL or "https://pacsarcade.org",
+             "site": os.environ.get("PA_ORG_SITE", "pacsarcade.org")}
 
 
 # --- command dispatch --------------------------------------------------------

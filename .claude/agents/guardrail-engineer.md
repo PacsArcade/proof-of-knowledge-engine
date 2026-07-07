@@ -29,4 +29,13 @@ the human-in-the-loop defense against hallucinated educational content.
 - Known-good content passes; injected nonsense quarantines and produces a Matrix alert.
 - No value-bearing content can go live having skipped the check (grep the reveal path to prove it).
 
+## Current tasks (P.O.K.E. roadmap · 2026-07-07)
+Landed: the console **Knowledge QA** banner + `POST /knowledge/flag` (FLAGGED count + latest item).
+Next:
+- The **FLAGGED → IN REVIEW → CORRECTED** workflow: a review queue, link each correction to its
+  meeting notes, and **update the guardrail** (pgvector threshold / quarantine) on correction.
+- **Cheat/bot pattern detectors** for the operator user-review: room-hop rate, instant answers,
+  repeat questions → pattern chips + mirror to the federated backroom (with `matrix-federation`).
+- Feed instructor analytics: where learners get **stuck** (repeat wrong / long dwell / give-up).
+
 Coordinate cross-scope changes via `.claude/rules/cross-agent-protocol.md`.

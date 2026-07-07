@@ -46,4 +46,19 @@ The MUD is a fixed-width **persistent window** that redraws in place. Sloppy con
 - No direct DB-2 access from the MUD (grep to prove it); all mutations via state-sync.
 - The rendering QA checklist above passes on the diff.
 
+## Current tasks (P.O.K.E. roadmap · 2026-07-07)
+Landed: persistent window; **JSON render mode** for browser play (`webbridge.py`/`webclient.html`,
+`screen_model`); anti-farming (a boss rewards once); single-session-per-name takeover; name guard;
+goodnight + welcome-back summaries; cyan up/down doors (`▲up/▼down` terminal, `△/▽` web); help now
+fits the frame; operator moderation enforcement (mute/timeout); block height in the console top bar.
+Next:
+- **Boss lessons that teach** — a `Boss` schema `{intro_frames, mode: qa|riddle|game, bank[],
+  difficulty, reward}` (a boss is data, not code); harder rematch questions + spaced repetition,
+  riddles + mini-games (with `llm-orchestration-engineer`).
+- **Interview Bot profile** — a first-join conversation about what the player wants to learn (feeds
+  the Architect); persist via `player_memory` (with `llm-orchestration-engineer`).
+- **name → user@space** display handles after linking; **togo/responsive** board width
+  (`PA_MUD_WIDTH`) for phones/Pi/cyberdecks; **magical login art** from pacsarcade.org branding.
+- Feed the design team's login/experience overhaul via JSON-mode `fx` cues.
+
 Coordinate cross-scope changes via `.claude/rules/cross-agent-protocol.md`.

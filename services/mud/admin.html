@@ -97,14 +97,19 @@ button{font-family:var(--pa-font-pixel)}
   border-top:2px solid var(--pa-edge);flex-wrap:wrap;
 }
 .tk-lbl{font-family:var(--pa-font-pixel);font-size:9px;color:var(--pa-fg-dim);white-space:nowrap}
-.metric{display:inline-flex;align-items:center;gap:5px}
-.metric-lbl{font-family:var(--pa-font-pixel);font-size:7px;color:var(--pa-fg-dim)}
+.metric{display:inline-flex;align-items:center;gap:6px}
+.metric-ic{width:14px;height:14px;color:var(--pa-fg-dim);flex:none}
 .micro{
-  display:inline-flex;gap:1px;align-items:flex-end;width:42px;height:14px;
-  border:1px solid #2a2a2a;background:#050505;padding:1px;box-sizing:border-box;
+  position:relative;display:block;width:58px;height:16px;
+  border:1px solid #2a2a2a;background:#050505;box-sizing:border-box;
 }
-.micro > i{flex:1;min-height:1px;display:block}
-.metric-val{font-family:var(--pa-font-mono);font-size:11px}
+.micro-bars{position:absolute;inset:1px;display:flex;gap:1px;align-items:flex-end}
+.micro-bars > i{flex:1;min-height:1px;display:block}
+.micro-val{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-family:var(--pa-font-mono);font-size:10px;line-height:1;pointer-events:none;
+  text-shadow:0 0 2px #000,0 0 4px #000,1px 1px 0 #000,-1px 0 0 #000;
+}
 
 .layout{display:grid;grid-template-columns:320px 1fr;flex:1;align-items:stretch;min-height:0}
 .rail{
@@ -231,23 +236,19 @@ button{font-family:var(--pa-font-pixel)}
       <span class="tk-lbl">UPTIME <span id="tk-uptime" style="color:var(--pa-fg)">&mdash;</span></span>
       <div class="grow"></div>
       <span class="metric" title="CPU — last 12s, colour is temperature">
-        <span class="metric-lbl">CPU</span>
-        <span class="micro" id="tk-cpu-bars"></span>
-        <span class="metric-val" id="tk-cpu-val">&mdash;</span>
+        <svg class="metric-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-label="CPU"><rect x="7" y="7" width="10" height="10" rx="1"/><path d="M9 3v2M15 3v2M9 19v2M15 19v2M3 9h2M3 15h2M19 9h2M19 15h2"/></svg>
+        <span class="micro"><span class="micro-bars" id="tk-cpu-bars"></span><span class="micro-val" id="tk-cpu-val">&mdash;</span></span>
       </span>
       <span class="metric" title="Memory — last 12s">
-        <span class="metric-lbl">MEM</span>
-        <span class="micro" id="tk-mem-bars"></span>
-        <span class="metric-val" id="tk-mem-val">&mdash;</span>
+        <svg class="metric-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-label="Memory"><rect x="3" y="8" width="18" height="9" rx="1"/><path d="M7 8V6M12 8V6M17 8V6M7 17v2M17 17v2"/></svg>
+        <span class="micro"><span class="micro-bars" id="tk-mem-bars"></span><span class="micro-val" id="tk-mem-val">&mdash;</span></span>
       </span>
       <span class="metric" title="Network kbps — last 12s (bars scaled to window peak)">
-        <span class="metric-lbl">NET</span>
-        <span class="micro" id="tk-net-bars"></span>
-        <span class="metric-val" id="tk-net-val">&mdash;</span>
+        <svg class="metric-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-label="Network"><circle cx="12" cy="5" r="2.3"/><circle cx="5" cy="19" r="2.3"/><circle cx="19" cy="19" r="2.3"/><path d="M12 7.3 6.2 16.8M12 7.3 17.8 16.8M7.3 19h9.4"/></svg>
+        <span class="micro"><span class="micro-bars" id="tk-net-bars"></span><span class="micro-val" id="tk-net-val">&mdash;</span></span>
       </span>
-      <span class="slash">/</span>
       <span class="px" style="font-size:7px;letter-spacing:.15em;color:var(--pa-fg-dim)">BLOCK</span>
-      <span class="px" id="tk-block" style="font-size:10px;color:var(--pa-fg)" title="No block-height feed wired yet">&mdash;</span>
+      <span class="px" id="tk-block" style="font-size:10px;color:var(--pa-fg)" title="Bitcoin block height">&mdash;</span>
     </div>
   </header>
 
@@ -265,6 +266,7 @@ button{font-family:var(--pa-font-pixel)}
           </div>
           <div class="mono ell" id="nl-url" style="font-size:11px;color:var(--pa-fg-dim);margin-bottom:10px;word-break:break-all;white-space:normal">&mdash;</div>
           <button class="abtn cyan wide" id="nl-toggle" style="min-height:36px">&mdash;</button>
+          <button class="abtn wide" id="nl-edit" style="min-height:32px;margin-top:6px">EDIT SITE + NODE URL</button>
           <div class="divider-dashed">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
               <span class="px" style="font-size:8px;color:var(--pa-fg-dim);letter-spacing:.12em">OPERATOR ID</span>
@@ -576,6 +578,19 @@ button{font-family:var(--pa-font-pixel)}
     setMetric("tk-mem-bars","tk-mem-val", h.mem, "mem");
     setMetric("tk-net-bars","tk-net-val", h.net, "net");
   }
+  function renderBlock(block){
+    const el = $("tk-block");
+    const h = block && block.height;
+    if(h !== null && h !== undefined && !isNaN(h)){
+      el.textContent = Number(h).toLocaleString();
+      el.style.color = "var(--pa-fg)";
+      el.title = "Bitcoin block height (" + (block.source || "feed") + ")";
+    }else{
+      el.textContent = "—";
+      el.style.color = "var(--pa-fg-dim)";
+      el.title = "No block feed — set PA_BITCOIN_REST_URL / PA_BITCOIN_RPC_URL / PA_BLOCK_HEIGHT";
+    }
+  }
 
   /* ---------------- left rail ---------------- */
   function renderNodeLink(sitelink){
@@ -585,6 +600,7 @@ button{font-family:var(--pa-font-pixel)}
     modeEl.textContent = testing ? "TESTING" : "SYNCED";
     modeEl.className = "chip " + (testing ? "c-cyan" : "c-neon");
     modeEl.style.color = testing ? "var(--pa-cyan)" : "var(--pa-neon)";
+    if(sl.site) $("nl-site").textContent = String(sl.site).toUpperCase();
     $("nl-url").textContent = sl.url || "—";
     $("nl-toggle").textContent = testing ? "POINT BACK TO PRODUCTION NODE" : "USE LOCAL INSTANCE FOR TESTING";
     $("nl-toggle").dataset.mode = testing ? "synced" : "testing";
@@ -944,7 +960,7 @@ button{font-family:var(--pa-font-pixel)}
     if(inFlight) return;
     inFlight = true;
     try{
-      const [stats, hist, nodes, relays, torrent, sitelink, modules] = await Promise.all([
+      const [stats, hist, nodes, relays, torrent, sitelink, modules, block] = await Promise.all([
         apiGet("/stats"),
         softGet("/system/history?window=60"),
         softGet("/nodes"),
@@ -952,6 +968,7 @@ button{font-family:var(--pa-font-pixel)}
         softGet("/torrent"),
         softGet("/sitelink"),
         softGet("/modules"),
+        softGet("/block"),
       ]);
 
       // fetch chat history for watched players (small set)
@@ -966,6 +983,7 @@ button{font-family:var(--pa-font-pixel)}
       lastStatsData = stats;
 
       renderTicker(stats, hist);
+      renderBlock(block);
       renderNodeLink(sitelink);
       renderOperator();
       renderSocial(stats, relays);
@@ -1045,6 +1063,17 @@ button{font-family:var(--pa-font-pixel)}
     $("nl-toggle").addEventListener("click", () => {
       const mode = $("nl-toggle").dataset.mode || "synced";
       doAction("sitelink " + mode, "/sitelink", { mode });
+    });
+    // node link items — configurable in the console (POST /sitelink)
+    $("nl-edit").addEventListener("click", () => {
+      const site = prompt("Site label shown here (e.g. pacsarcade.org):", $("nl-site").textContent.trim());
+      if(site === null) return;
+      const url = prompt("Node URL — where this node is reachable:", $("nl-url").textContent.trim());
+      if(url === null) return;
+      const body = {};
+      if(site.trim()) body.site = site.trim();
+      if(url.trim())  body.url = url.trim();
+      doAction("node link", "/sitelink", body);
     });
     // operator id (local/static — no endpoint yet)
     $("op-btn").addEventListener("click", () => {

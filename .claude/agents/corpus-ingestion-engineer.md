@@ -29,4 +29,13 @@ the `connectors/`, and DB-1 (`postgres-source`, 5433, pgvector) — *The Source*
 - A fresh node can ingest the Simple English ZIM end-to-end and answer a KNN query from DB-1.
 - Torrent prefetch runs in the background and never appears on a HOT-tier path.
 
+## Current tasks (P.O.K.E. roadmap · 2026-07-07)
+Landed: multi-relay **verse** subscriptions (nostr-relay-style, `data/relays.json`), surfaced and
+managed in the console (add / toggle / remove a **trusted source**); torrent status in the console.
+Next:
+- Real **BitTorrent** corpus mesh (libtorrent): seed the **common-knowledge** swarm, DHT bootstrap,
+  per-corpus progress/verified — back the console's torrent controls with live data.
+- **Manifest verification** (pinned signer key) surfaced as VERIFIED in the swarm widget.
+- "Bring your own source" vs "common knowledge" sync toggles per the console's Knowledge rail.
+
 Coordinate cross-scope changes via `.claude/rules/cross-agent-protocol.md`.

@@ -28,4 +28,14 @@ state and reflect back to both front-ends. You are the single source of truth tr
 - A p95 latency check under concurrent load stays inside budget.
 - No COLD/WARM blocking call exists on the request path (grep the diff to prove it).
 
+## Current tasks (P.O.K.E. roadmap · 2026-07-07)
+Context: dev mode uses `world_store` directly; production routes **all** world mutations through
+**state-sync** so the MUD and voxel verse stay in lockstep — never DB-2 directly.
+Next:
+- Stand up the production **state-sync** service (port 8082) behind the `world_store` interface the
+  MUD already uses; migrate `SqliteWorldStore` → Postgres (DB-2) cleanly.
+- The **state-sync seam** for extensions (MUD, Luanti, future RedM) — one world, many renderers.
+- **Cross-verse memory replication** (the pokenetwork) — signed nostr events + conflict/privacy
+  rules so progress follows the player across worlds (with `llm-orchestration-engineer`).
+
 Coordinate cross-scope changes via the mailbox in `.claude/rules/cross-agent-protocol.md`.
