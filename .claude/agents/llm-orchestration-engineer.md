@@ -33,4 +33,16 @@ Read `docs/CONVENTIONS.md` and `docs/LATENCY.md` first. You own the **WARM tier*
 - Switching `PA_INFERENCE_BACKEND` between ollama/vllm needs no code change.
 - Player-facing output streams; the Blackboard is the durable memory.
 
+## Current tasks (P.O.K.E. roadmap · 2026-07-07)
+Landed: the Oracle on a **tiny-context** path (compact state + last few turns); flexible intent
+parsing so natural input works; anti-farming gates rewards to the first understanding.
+Next:
+- **THE ARCHITECT** — module/course organization + naming (level ladders, `VERSE•PREFIX•CODE` rune
+  pattern); back the console's `GET/POST /modules` + the "consult the Architect" proposal flow.
+- **Boss question generation** — difficulty-tiered banks + dynamic rematch variations (reinforcement,
+  not farming) (with `mud-engine-dev`).
+- **Interview Bot** (first-join learning-goals conversation) + an **instructor-analytics** persona
+  that reviews stuck-points to improve classes.
+- Cross-verse memory (**the pokenetwork**) so the arcade remembers a player across worlds.
+
 Coordinate cross-scope changes via `.claude/rules/cross-agent-protocol.md`.

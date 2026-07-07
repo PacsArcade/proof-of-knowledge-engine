@@ -28,6 +28,18 @@ are the next features. Grouped so we can pick a coherent slice at a time.
   learn it); cyan up/down door arrows; slower animations; POKEMUD branding; admin **world + client**
   columns; `play.py` exits cleanly on disconnect; **`docs/DESIGN-CONSOLE.md`** theming guide.
 
+## Landed (round 3 — operator console + polish)
+- **Console rebranded** to the Pac's Arcade design (tokens/fonts, no radius/gradients, telemetry
+  ticker with CPU/MEM/NET micro-histograms + **icons & values-inside-the-box**, moderation, modules,
+  backroom, token gate). New endpoints: `/system/history`, `/mute` `/timeout` `/watch`, `/block`,
+  `/modules`, `/sitelink`, `/knowledge/flag`, `/players/<name>/history`.
+- **Block height** now populates the top bar (local-first: `PA_BITCOIN_REST_URL` / RPC / a fixed
+  `PA_BLOCK_HEIGHT`). **Node Link items are configurable** in the console (site + node URL → `/sitelink`).
+- Help screen **fits the frame** (≤12 lines, ≤68 cols — no more overflow/cut-off). Up/down doors
+  consistent (`▲up/▼down` terminal, `△/▽` web). All 8 agent task files refreshed with current work.
+- **Endpoint gaps still stubbed (next round):** live module CRUD (Architect), federated #backroom
+  provisioning, user-review pattern detectors, operator-identity linking.
+
 ## Epic — Boss lessons that teach (riddles, reinforcement) — notes for the LLM wiring
 - **Reinforcement, not farming.** A boss gives loot once. On a *rematch* it should pose a **new or
   harder** question — a reinforcement-learning check with fresh scenarios — and only reward genuinely

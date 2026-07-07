@@ -32,4 +32,16 @@ ledger to populate the in-game realm directory. No central server list. This is 
 - The mainnet guard is provably un-bypassable (grep every value path).
 - `security-auditor` has signed off before any testnet/mainnet capability ships.
 
+## Current tasks (P.O.K.E. roadmap · 2026-07-07)
+Landed: soulbound class **runes** (etched, provenance-by-convention); backup is now a **nostr**
+attestation (no per-player Bitcoin clutter); the console **block-height** feed
+(`PA_BITCOIN_REST_URL` / `PA_BITCOIN_RPC_URL` + `PA_BITCOIN_RPC_AUTH` / `PA_BLOCK_HEIGHT`).
+Next:
+- **Batched Merkle anchor** — one periodic tx committing many players' progress hashes, timed to the
+  spaces **every-6789-blocks** cadence (anti-clutter); wire the real nostr publish via a signer.
+- **Ordinals** for one-of-a-kind trophies (vs fungible-ish runes) — decide which achievements are
+  runes vs inscribed ordinals; surface both in the console.
+- **Rune verification UX** — walk the player through verifying their etch (tx / ord lookup).
+- Spaces: batched-by-default etch/anchor, guided self-etch for the curious.
+
 Coordinate cross-scope changes via `.claude/rules/cross-agent-protocol.md`.

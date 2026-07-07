@@ -127,7 +127,8 @@
 (() => {
   const $ = id => document.getElementById(id);
   const THEME = {green:'#39ff9e',amber:'#ffbe3c',cyan:'#39e6ff',magenta:'#ff35c8',grey:'#9aa6bd',red:'#ff5a5a',gold:'#ffd24a'};
-  const ARROW = {north:'▲ north',south:'▼ south',east:'► east',west:'◄ west',up:'↑ up',down:'↓ down'};
+  // one arrow family — filled triangles for the compass, hollow for vertical (up/down)
+  const ARROW = {north:'▲ north',south:'▼ south',east:'► east',west:'◄ west',up:'△ up',down:'▽ down'};
   let ws=null, named=false, done=false, endSite='';
 
   function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
