@@ -1,0 +1,499 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P.O.K.E. — Node Console</title>
+<style>
+  :root{
+    --bg:#08060c; --panel:#120d1c; --panel2:#0d0a15; --ink:#e9e6f5;
+    --mag:#ff35c8; --mag2:#ff3ea5; --amber:#ffbe3c; --cyan:#39e6ff;
+    --green:#39ff9e; --grey:#9aa; --line:#2a2038; --danger:#ff4d5e;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; color:var(--ink);
+    font-family:"Cascadia Code",ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:14px; line-height:1.45;
+    background:
+      radial-gradient(120% 80% at 50% -10%, rgba(255,53,200,.10), transparent 60%),
+      radial-gradient(100% 60% at 100% 100%, rgba(57,230,255,.07), transparent 55%),
+      var(--bg);
+    min-height:100vh;
+  }
+  /* scanline + vignette overlay */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:9999;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px),
+      radial-gradient(130% 100% at 50% 50%, transparent 60%, rgba(0,0,0,.55) 100%);
+    mix-blend-mode:multiply; opacity:.6;
+  }
+  a{color:var(--cyan)}
+  button{font-family:inherit}
+
+  /* ---- header ---- */
+  header{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:14px 20px; border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg, rgba(255,53,200,.08), transparent);
+    position:sticky; top:0; z-index:50; backdrop-filter:blur(4px);
+  }
+  header h1{
+    margin:0; font-size:16px; letter-spacing:2px; font-weight:700;
+    color:var(--mag); text-shadow:0 0 10px rgba(255,53,200,.55);
+    white-space:nowrap;
+  }
+  header .heart{filter:drop-shadow(0 0 6px rgba(255,53,200,.7))}
+  header .spacer{flex:1}
+  .conn{
+    font-size:12px; color:var(--grey); display:flex; align-items:center; gap:7px;
+  }
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--grey);box-shadow:0 0 8px currentColor}
+  .dot.ok{background:var(--green);color:var(--green)}
+  .dot.bad{background:var(--amber);color:var(--amber)}
+  .ghost-btn{
+    background:transparent;border:1px solid var(--line);color:var(--grey);
+    padding:5px 12px;border-radius:8px;cursor:pointer;font-size:12px;
+  }
+  .ghost-btn:hover{border-color:var(--mag);color:var(--mag)}
+
+  /* ---- grid ---- */
+  main{padding:20px; max-width:1300px; margin:0 auto;}
+  .grid{
+    display:grid; gap:18px;
+    grid-template-columns:repeat(auto-fill, minmax(320px,1fr));
+  }
+  .card{
+    background:linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid var(--line); border-radius:16px; padding:0;
+    box-shadow:0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.03);
+    overflow:hidden; display:flex; flex-direction:column;
+  }
+  .card.wide{grid-column:1/-1}
+  .card > h2{
+    margin:0; padding:11px 16px; font-size:12px; letter-spacing:2px;
+    text-transform:uppercase; color:var(--amber);
+    border-bottom:1px solid var(--line);
+    background:rgba(255,190,60,.05);
+    display:flex; align-items:center; gap:8px;
+  }
+  .card > h2 .accent{color:var(--cyan)}
+  .card > h2 .count{margin-left:auto;color:var(--grey);letter-spacing:0}
+  .card .body{padding:14px 16px}
+
+  /* stat rows */
+  .kv{display:flex; justify-content:space-between; gap:10px; padding:5px 0; border-bottom:1px dashed rgba(255,255,255,.05)}
+  .kv:last-child{border-bottom:0}
+  .kv .k{color:var(--grey)}
+  .kv .v{color:var(--ink); text-align:right; word-break:break-word}
+  .big{font-size:22px;color:var(--green);text-shadow:0 0 10px rgba(57,255,158,.4)}
+
+  /* pills */
+  .pill{
+    display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px;
+    letter-spacing:1px; border:1px solid currentColor; text-transform:uppercase;
+  }
+  .pill.on{color:var(--green)} .pill.off{color:var(--grey)}
+  .pill.warn{color:var(--amber)} .pill.good{color:var(--cyan)}
+  .pill.bad{color:var(--danger)}
+
+  /* tables */
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th{
+    text-align:left; color:var(--grey); font-weight:600; font-size:11px;
+    letter-spacing:1px; text-transform:uppercase; padding:6px 8px;
+    border-bottom:1px solid var(--line);
+  }
+  td{padding:6px 8px; border-bottom:1px solid rgba(255,255,255,.04)}
+  tr:last-child td{border-bottom:0}
+  td.num{color:var(--cyan); text-align:right; font-variant-numeric:tabular-nums}
+  .badge-admin{
+    color:var(--mag); border:1px solid var(--mag); border-radius:5px;
+    font-size:9px; padding:0 4px; margin-left:6px; letter-spacing:1px;
+  }
+  .muted{color:var(--grey); font-style:italic}
+
+  /* controls */
+  .ctl{display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; align-items:center}
+  .ctl label{font-size:11px;color:var(--grey);letter-spacing:1px;min-width:74px;text-transform:uppercase}
+  input[type=text]{
+    flex:1; min-width:120px; background:#060409; border:1px solid var(--line);
+    color:var(--ink); padding:8px 10px; border-radius:8px; font-family:inherit; font-size:13px;
+  }
+  input[type=text]:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 0 2px rgba(57,230,255,.15)}
+  .btn{
+    background:linear-gradient(180deg,#1b1329,#140e20); border:1px solid var(--line);
+    color:var(--ink); padding:8px 14px; border-radius:8px; cursor:pointer; font-size:12px;
+    letter-spacing:1px; text-transform:uppercase;
+  }
+  .btn:hover{border-color:var(--cyan);color:var(--cyan)}
+  .btn.mag:hover{border-color:var(--mag);color:var(--mag)}
+  .btn.amber:hover{border-color:var(--amber);color:var(--amber)}
+  .btn.danger{border-color:rgba(255,77,94,.4);color:var(--danger)}
+  .btn.danger:hover{background:rgba(255,77,94,.12);box-shadow:0 0 12px rgba(255,77,94,.3)}
+  .toggle-btn{min-width:64px}
+  .ctl-row{display:flex;gap:10px;flex-wrap:wrap}
+  .ctl-row .btn{flex:1}
+
+  /* toast log */
+  #log{margin-top:8px; font-size:12px; min-height:18px}
+  .logline{padding:4px 0; border-top:1px dashed rgba(255,255,255,.06); color:var(--grey)}
+  .logline .ok{color:var(--green)} .logline .err{color:var(--danger)}
+  .logline .t{color:var(--cyan)}
+
+  /* token screen */
+  #gate{
+    position:fixed; inset:0; z-index:200; display:none;
+    align-items:center; justify-content:center; padding:20px;
+    background:radial-gradient(80% 60% at 50% 40%, rgba(255,53,200,.12), transparent 60%), var(--bg);
+  }
+  #gate.show{display:flex}
+  .gatebox{
+    width:100%; max-width:400px; text-align:center;
+    background:linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid var(--line); border-radius:18px; padding:34px 28px;
+    box-shadow:0 20px 60px rgba(0,0,0,.6);
+  }
+  .gatebox .logo{font-size:20px;letter-spacing:3px;color:var(--mag);text-shadow:0 0 14px rgba(255,53,200,.6);margin-bottom:6px}
+  .gatebox p{color:var(--grey);font-size:12px;margin:6px 0 20px}
+  .gatebox input{width:100%;text-align:center;margin-bottom:14px}
+  .gatebox .btn{width:100%;padding:11px}
+  #gate-note{color:var(--danger);font-size:12px;min-height:16px;margin-top:12px}
+  .hint{color:var(--grey);font-size:11px;margin-top:14px;opacity:.7}
+</style>
+
+<!-- ============ TOKEN GATE ============ -->
+<div id="gate">
+  <div class="gatebox">
+    <div class="logo">P.O.K.E.</div>
+    <p>Proof of Knowledge Engine — Node Console</p>
+    <input id="gate-input" type="text" placeholder="Enter operator token" autocomplete="off" spellcheck="false">
+    <button class="btn mag" id="gate-connect">Connect 💜</button>
+    <div id="gate-note"></div>
+    <div class="hint">Copy the token the server printed at startup.</div>
+  </div>
+</div>
+
+<!-- ============ DASHBOARD ============ -->
+<header>
+  <h1><span class="heart">💜</span> P.O.K.E. — NODE CONSOLE</h1>
+  <div class="spacer"></div>
+  <div class="conn"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting…</span></div>
+  <button class="ghost-btn" id="signout">sign out</button>
+</header>
+
+<main>
+  <div class="grid">
+    <!-- NODE -->
+    <section class="card">
+      <h2><span class="accent">▸</span> Node</h2>
+      <div class="body" id="node-body"><span class="muted">loading…</span></div>
+    </section>
+
+    <!-- KNOWLEDGE SWARM -->
+    <section class="card">
+      <h2><span class="accent">▸</span> Knowledge Swarm</h2>
+      <div class="body" id="swarm-body"><span class="muted">loading…</span></div>
+    </section>
+
+    <!-- CONTROLS -->
+    <section class="card">
+      <h2><span class="accent">▸</span> Controls</h2>
+      <div class="body">
+        <div class="ctl">
+          <label>Broadcast</label>
+          <input type="text" id="bc-input" placeholder="message to all players">
+          <button class="btn mag" id="bc-send">Send</button>
+        </div>
+        <div class="ctl">
+          <label>Kick</label>
+          <input type="text" id="kick-input" placeholder="player name">
+          <button class="btn amber" id="kick-send">Kick</button>
+        </div>
+        <div class="ctl">
+          <label>Matrix chat</label>
+          <button class="btn toggle-btn" id="chat-toggle">—</button>
+          <span class="muted" style="font-size:11px">bridge to matrix room</span>
+        </div>
+        <div class="ctl-row">
+          <button class="btn amber" id="reboot-btn">Reboot node</button>
+          <button class="btn danger" id="shutdown-btn">Shutdown</button>
+        </div>
+        <div id="log"></div>
+      </div>
+    </section>
+
+    <!-- PLAYERS -->
+    <section class="card wide">
+      <h2><span class="accent">▸</span> Players <span class="count" id="players-count"></span></h2>
+      <div class="body" id="players-body"><span class="muted">loading…</span></div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+(function(){
+  const TOKEN_KEY = "poke_admin_token";
+  let token = null;
+  let timer = null;
+  let lastChatMatrix = null;
+
+  /* ---------- tiny DOM helpers ---------- */
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+  function fmtDuration(sec){
+    sec = Math.max(0, Math.floor(Number(sec)||0));
+    const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+    return `${h}h ${String(m).padStart(2,"0")}m ${String(s).padStart(2,"0")}s`;
+  }
+  function fmtShort(sec){
+    sec = Math.max(0, Math.floor(Number(sec)||0));
+    if(sec < 60) return sec + "s";
+    const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+    if(h) return `${h}h ${m}m`;
+    return `${m}m ${String(s).padStart(2,"0")}s`;
+  }
+
+  /* ---------- auth / gate ---------- */
+  function showGate(note){
+    if(timer){ clearInterval(timer); timer = null; }
+    token = null;
+    $("gate-note").textContent = note || "";
+    $("gate").classList.add("show");
+    $("gate-input").value = "";
+    $("gate-input").focus();
+  }
+  function hideGate(){ $("gate").classList.remove("show"); }
+
+  function connect(){
+    const v = $("gate-input").value.trim();
+    if(!v){ $("gate-note").textContent = "token required"; return; }
+    token = v;
+    localStorage.setItem(TOKEN_KEY, v);
+    hideGate();
+    start();
+  }
+  function signOut(){
+    localStorage.removeItem(TOKEN_KEY);
+    showGate("");
+  }
+
+  /* ---------- fetch wrappers ---------- */
+  class AuthError extends Error {}
+
+  async function apiGet(path){
+    const r = await fetch(path, { headers: { "X-POKE-Admin-Token": token } });
+    if(r.status === 401) throw new AuthError();
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+  async function apiPost(path, body){
+    const r = await fetch(path, {
+      method:"POST",
+      headers:{ "X-POKE-Admin-Token": token, "Content-Type":"application/json" },
+      body: JSON.stringify(body || {})
+    });
+    if(r.status === 401) throw new AuthError();
+    if(!r.ok){
+      let msg = "HTTP " + r.status;
+      try{ const j = await r.json(); if(j && j.result) msg = j.result; }catch(e){}
+      throw new Error(msg);
+    }
+    return r.json();
+  }
+
+  function on401(){
+    localStorage.removeItem(TOKEN_KEY);
+    showGate("token rejected — re-enter operator token");
+  }
+
+  /* ---------- connection indicator ---------- */
+  function setConn(state, text){
+    const dot = $("conn-dot"), t = $("conn-text");
+    dot.className = "dot" + (state==="ok"?" ok":state==="bad"?" bad":"");
+    t.textContent = text;
+  }
+
+  /* ---------- render: NODE ---------- */
+  function renderNode(s){
+    const store = s.store || {};
+    const chatOn = !!s.chat_matrix;
+    lastChatMatrix = chatOn;
+    updateChatToggle();
+    $("node-body").innerHTML = `
+      <div class="kv"><span class="k">Uptime</span><span class="v big">${fmtDuration(s.uptime_s)}</span></div>
+      <div class="kv"><span class="k">Store backend</span><span class="v">${esc(store.backend || "—")}</span></div>
+      <div class="kv"><span class="k">Store location</span><span class="v">${esc(store.location || "—")}</span></div>
+      <div class="kv"><span class="k">Oracle mode</span><span class="v">${esc(s.oracle || "—")}</span></div>
+      <div class="kv"><span class="k">Matrix chat</span><span class="v"><span class="pill ${chatOn?"on":"off"}">${chatOn?"on":"off"}</span></span></div>
+      <div class="kv"><span class="k">Runes etched (session)</span><span class="v" style="color:var(--amber)">${Number(s.runes_etched_session||0)}</span></div>
+    `;
+  }
+
+  /* ---------- render: PLAYERS ---------- */
+  function renderPlayers(s){
+    const players = Array.isArray(s.players) ? s.players : [];
+    const count = (s.player_count!=null) ? s.player_count : players.length;
+    $("players-count").textContent = `(${count})`;
+    if(!players.length){
+      $("players-body").innerHTML = `<span class="muted">no players online</span>`;
+      return;
+    }
+    const rows = players.map(p => {
+      const nm = p.fren ? esc((String(p.fren).startsWith("@") ? "" : "@") + p.fren) : esc(p.name || "?");
+      const admin = p.admin ? `<span class="badge-admin">ADMIN</span>` : "";
+      return `<tr>
+        <td>${nm}${admin}</td>
+        <td>${esc(p.room || "—")}</td>
+        <td class="num">${fmtShort(p.uptime_s)}</td>
+        <td class="num">${fmtShort(p.idle_s)}</td>
+      </tr>`;
+    }).join("");
+    $("players-body").innerHTML = `
+      <table>
+        <thead><tr><th>Name</th><th>Room</th><th>Uptime</th><th>Idle</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  /* ---------- render: SWARM ---------- */
+  function renderSwarm(n){
+    if(!n || n.online === false){
+      const reason = (n && n.reason) ? n.reason : "unavailable";
+      $("swarm-body").innerHTML = `<div class="kv"><span class="k">Status</span>
+        <span class="v"><span class="pill off">offline</span></span></div>
+        <div class="muted" style="margin-top:8px">OFFLINE — ${esc(reason)}</div>`;
+      return;
+    }
+    const rows = [];
+    rows.push(`<div class="kv"><span class="k">Status</span><span class="v"><span class="pill good">online</span></span></div>`);
+
+    const synced = (n.peers!=null) ? n.peers : (n.nodes!=null ? n.nodes : null);
+    if(synced!=null)
+      rows.push(`<div class="kv"><span class="k">Nodes synced</span><span class="v" style="color:var(--cyan)">${esc(synced)}</span></div>`);
+
+    const corpora = n.corpora || n.swarms;
+    if(corpora!=null){
+      const list = Array.isArray(corpora) ? corpora.join(", ") : String(corpora);
+      rows.push(`<div class="kv"><span class="k">Corpora</span><span class="v">${esc(list || "—")}</span></div>`);
+    }
+
+    if(n.shards_cached!=null){
+      const tot = (n.shards_total!=null) ? " / " + esc(n.shards_total) : "";
+      rows.push(`<div class="kv"><span class="k">Shards cached</span><span class="v" style="color:var(--green)">${esc(n.shards_cached)}${tot}</span></div>`);
+    }
+
+    if(n.manifest_verified!=null){
+      const ok = !!n.manifest_verified;
+      rows.push(`<div class="kv"><span class="k">Manifest</span><span class="v"><span class="pill ${ok?"good":"bad"}">${ok?"verified":"UNVERIFIED"}</span></span></div>`);
+    }
+
+    $("swarm-body").innerHTML = rows.join("");
+  }
+
+  /* ---------- controls: chat toggle ---------- */
+  function updateChatToggle(){
+    const b = $("chat-toggle");
+    if(lastChatMatrix == null){ b.textContent = "—"; b.className = "btn toggle-btn"; return; }
+    if(lastChatMatrix){ b.textContent = "ON"; b.className = "btn toggle-btn"; b.style.color = "var(--green)"; b.style.borderColor = "var(--green)"; }
+    else { b.textContent = "OFF"; b.className = "btn toggle-btn"; b.style.color = "var(--grey)"; b.style.borderColor = "var(--line)"; }
+  }
+
+  /* ---------- log / toast ---------- */
+  function log(label, res, isErr){
+    const el = document.createElement("div");
+    el.className = "logline";
+    const time = new Date().toLocaleTimeString();
+    el.innerHTML = `<span class="t">${time}</span> ${esc(label)} → <span class="${isErr?"err":"ok"}">${esc(res)}</span>`;
+    const box = $("log");
+    box.prepend(el);
+    while(box.children.length > 5) box.removeChild(box.lastChild);
+  }
+
+  async function doAction(label, path, body){
+    try{
+      const j = await apiPost(path, body);
+      log(label, (j && j.result!=null) ? j.result : "ok", false);
+      refresh(); // reflect state changes immediately
+      return j;
+    }catch(e){
+      if(e instanceof AuthError){ on401(); return; }
+      log(label, e.message || "failed", true);
+    }
+  }
+
+  /* ---------- main refresh loop ---------- */
+  let inFlight = false;
+  async function refresh(){
+    if(inFlight) return;
+    inFlight = true;
+    try{
+      const [stats, nodes] = await Promise.all([
+        apiGet("/stats"),
+        apiGet("/nodes").catch(e => { if(e instanceof AuthError) throw e; return { online:false, reason:"nodes endpoint unreachable" }; })
+      ]);
+      renderNode(stats);
+      renderPlayers(stats);
+      renderSwarm(nodes);
+      setConn("ok", "live · refreshing every 5s");
+    }catch(e){
+      if(e instanceof AuthError){ on401(); return; }
+      setConn("bad", "reconnecting…");
+    }finally{
+      inFlight = false;
+    }
+  }
+
+  function start(){
+    setConn("", "connecting…");
+    refresh();
+    if(timer) clearInterval(timer);
+    timer = setInterval(refresh, 5000);
+  }
+
+  /* ---------- wire up controls ---------- */
+  function wire(){
+    $("gate-connect").addEventListener("click", connect);
+    $("gate-input").addEventListener("keydown", e => { if(e.key==="Enter") connect(); });
+    $("signout").addEventListener("click", signOut);
+
+    $("bc-send").addEventListener("click", () => {
+      const v = $("bc-input").value.trim();
+      if(!v) return;
+      doAction("broadcast", "/broadcast", { message:v });
+      $("bc-input").value = "";
+    });
+    $("bc-input").addEventListener("keydown", e => { if(e.key==="Enter") $("bc-send").click(); });
+
+    $("kick-send").addEventListener("click", () => {
+      const v = $("kick-input").value.trim();
+      if(!v) return;
+      doAction("kick " + v, "/kick", { player:v });
+      $("kick-input").value = "";
+    });
+    $("kick-input").addEventListener("keydown", e => { if(e.key==="Enter") $("kick-send").click(); });
+
+    $("chat-toggle").addEventListener("click", () => {
+      if(lastChatMatrix == null) return;
+      const next = !lastChatMatrix;
+      doAction("matrix chat " + (next?"on":"off"), "/chat", { enabled: next });
+    });
+
+    $("reboot-btn").addEventListener("click", () => {
+      if(confirm("Reboot the P.O.K.E. node? Players will be briefly disconnected."))
+        doAction("reboot", "/reboot", {});
+    });
+    $("shutdown-btn").addEventListener("click", () => {
+      if(confirm("SHUTDOWN the node? This stops the MUD entirely. Are you sure?"))
+        doAction("shutdown", "/shutdown", {});
+    });
+  }
+
+  /* ---------- boot ---------- */
+  wire();
+  token = localStorage.getItem(TOKEN_KEY);
+  if(token) start();
+  else showGate("");
+})();
+</script>

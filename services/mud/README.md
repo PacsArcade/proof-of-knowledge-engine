@@ -6,13 +6,19 @@
 ## Role
 
 `mud` is the **text terminal MUD server** — the retro front-end into the same world the Luanti
-voxel verse renders. Connect over telnet, get an ANSI / 8-bit-styled scrolling world. Every
-command that touches the world (`pull lever`, `open door`, `look`) is sent to **state-sync**,
-which translates it into a DB-2 write — so the MUD and Luanti are always looking at the **same**
-game state. The MUD never owns world state; DB-2 does, via `state-sync`.
+voxel verse renders. It's a **persistent-window** client: the game lives in one fixed double-line
+frame that **redraws in place** — the room, the Oracle's dialogue, your rune card, your profile all
+update *inside* the window (doors show as arrow-gaps in the frame), while a message log underneath
+carries transient lines (says, arrivals, operator notices). Special effects (boss animations, the
+rune-etch) redraw the frame frame-by-frame. Every command that touches the world (`pull lever`,
+`look`) mutates DB-2 via **state-sync** — the MUD never owns world state.
 
-When the MUD shows **LLM output** (Oracle dialogue, Architect room description), it **streams
-tokens** as they generate.
+In-game commands include: movement + `look`, `talk oracle` / `answer` / `ask oracle`, `pull lever`,
+`link fren|nostr|space` + `verify <code>`, `backup` (anchor progress on-chain), `profile`, `certs`,
+`inventory`, `say`, `who`, `help`. If the node is wired to **frens.earth** (`PA_FRENS_URL`), new
+players are walked through claiming their `@fren`; standalone nodes keep the plain experience.
+
+Boss/lesson animations use the `animate()` primitive — see [`art/`](art/) for the frame pipeline.
 
 ## Tier
 
@@ -68,8 +74,11 @@ The MUD is a node an operator runs, not a black box. One set of actions, three w
 - **Local stdin** — type commands in the terminal running `server.py`.
 - **In-MUD** — `admin <token>` elevates a player (token auto-generated + printed at startup, or set
   `PA_ADMIN_TOKEN`), then `stats`, `nodes`, `broadcast`, `kick`, `reboot`, `shutdown`.
-- **HTTP rails** (for the web-admin page) — localhost-only by default on `PA_MUD_ADMIN_PORT` (4001),
-  `X-POKE-Admin-Token` auth: `GET /stats /nodes`, `POST /broadcast /kick /chat /reboot /shutdown`.
+- **Web console** — open `http://127.0.0.1:4001/` in a browser: a self-contained arcade dashboard
+  ([`admin.html`](admin.html)) with labeled widgets (node, players, knowledge-swarm, controls). The
+  page loads without a token; paste the admin token once and it's stored locally and sent on every
+  API call. Backed by the localhost HTTP rails (`X-POKE-Admin-Token` auth): `GET /stats /nodes`,
+  `POST /broadcast /kick /chat /reboot /shutdown`.
 
 What it surfaces:
 - **stats** — logged-in players (name/@fren, room, uptime, idle), node uptime, runes etched this
