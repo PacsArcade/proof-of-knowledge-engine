@@ -1,6 +1,6 @@
 <!-- Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.) -->
 
-# 🕹️ Pac's Arcade — Proof of Knowledge Engine (P.O.K.E.)
+# 🕹️ Pac's Arcade — The Proof of Knowledge Engine (P.O.K.E.)
 
 > A community-owned, federated, gamified education node. Learn real things by playing —
 > in a text MUD **or** a 3D voxel world — tutored by a local AI that can't make things up,
