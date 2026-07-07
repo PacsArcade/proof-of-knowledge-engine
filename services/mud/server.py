@@ -24,6 +24,7 @@ import json
 import os
 import re
 import secrets
+from collections import deque
 import sys
 import textwrap
 import threading
@@ -262,6 +263,9 @@ class Player:
         self.pending_fx: list[str] = []    # one-shot effect cues for the web client (etch/victory/levelup)
         self.session_start_xp = 0          # snapshots for the "goodnight" session summary
         self.session_start_runes = 0
+        self.muted = False                 # operator moderation
+        self.timeout_until = 0.0
+        self.watched = False
 
     async def send(self, text: str) -> None:
         self.writer.write(text.encode("utf-8", "replace"))
@@ -727,7 +731,9 @@ def stats_json() -> dict:
         "world": WORLD,
         "players": [{
             "name": p.name, "fren": p.fren_tag, "world": WORLD, "room": p.room,
-            "client": "web" if p.web else "terminal",
+            "client": "web" if p.web else "terminal", "module": "FREE PLAY",
+            "muted": p.muted, "watched": p.watched,
+            "timeout_s": max(0, int(p.timeout_until - time.time())),
             "uptime_s": int(time.time() - p.connected_at),
             "idle_s": int(time.time() - p.idle_since), "admin": p.is_admin,
         } for p in PLAYERS.values()],
@@ -735,6 +741,10 @@ def stats_json() -> dict:
         "store": {"backend": type(STORE).__name__, "location": getattr(STORE, "path", "postgres DB-2")},
         "oracle": ("local-llm:" + GEN_MODEL) if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted",
         "chat_matrix": CHAT_MATRIX,
+        "qa": {"flagged": sum(1 for f in _QA_FLAGS if f["status"] == "FLAGGED"),
+               "in_review": sum(1 for f in _QA_FLAGS if f["status"] == "IN REVIEW"),
+               "corrected": sum(1 for f in _QA_FLAGS if f["status"] == "CORRECTED"),
+               "latest": (_QA_FLAGS[-1]["topic"] if _QA_FLAGS else "")},
     }
 
 
@@ -929,6 +939,23 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"relays": rl, "count": len(rl)})
         elif path == "/torrent":
             self._reply(200, torrent_status())
+        elif path == "/system/history":
+            win = 60
+            if "?" in self.path:
+                for kv in self.path.split("?", 1)[1].split("&"):
+                    if kv.startswith("window="):
+                        try:
+                            win = int(kv.split("=")[1])
+                        except Exception:
+                            pass
+            self._reply(200, system_history(win))
+        elif path == "/modules":
+            self._reply(200, {"modules": _MODULES})
+        elif path == "/sitelink":
+            self._reply(200, _SITELINK)
+        elif path.startswith("/players/") and path.endswith("/history"):
+            _, pl = _find_player(path[len("/players/"):-len("/history")])
+            self._reply(200, {"history": [_ANSI.sub("", x) for x in (pl.log if pl else [])]})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -965,6 +992,26 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         elif path == "/torrent":
             self._reply(200, {"ok": True, "result": torrent_control(
                 str(data.get("action", "status")), data.get("corpus_id"))})
+        elif path == "/mute":
+            self._reply(200, {"ok": True, "result": self._run(op_mute(
+                str(data.get("player", "")), bool(data.get("on", True)), str(data.get("reason", ""))))})
+        elif path == "/timeout":
+            self._reply(200, {"ok": True, "result": self._run(op_timeout(
+                str(data.get("player", "")), int(data.get("minutes", 5) or 5), str(data.get("reason", ""))))})
+        elif path == "/watch":
+            self._reply(200, {"ok": True, "result": self._run(op_watch(
+                str(data.get("player", "")), bool(data.get("on", True))))})
+        elif path == "/knowledge/flag":
+            _QA_FLAGS.append({"topic": data.get("topic", ""), "quote": data.get("quote", ""),
+                              "by": data.get("by", ""), "status": "FLAGGED"})
+            self._reply(200, {"ok": True, "result": "flagged"})
+        elif path == "/modules":
+            self._reply(200, {"ok": True, "result": "module save is stubbed — the Architect wires this next"})
+        elif path == "/sitelink":
+            _SITELINK["mode"] = "testing" if data.get("mode") == "testing" else "synced"
+            if data.get("url"):
+                _SITELINK["url"] = str(data.get("url"))
+            self._reply(200, {"ok": True, "result": _SITELINK["mode"]})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -1390,6 +1437,125 @@ def torrent_control(action: str, corpus_id=None) -> str:
     return f"{action} {corpus_id or 'all'} (queued; corpus service offline in dev)"
 
 
+# --- console: telemetry history + moderation + course/QA stubs ---------------
+_MHIST = {"cpu": deque(maxlen=90), "mem": deque(maxlen=90), "net": deque(maxlen=90)}
+_net_prev = {"t": 0.0, "total": 0}
+
+
+def _net_total_bytes():
+    try:
+        import psutil
+        io = psutil.net_io_counters()
+        return io.bytes_sent + io.bytes_recv
+    except Exception:
+        pass
+    if sys.platform.startswith("linux"):
+        try:
+            tot = 0
+            with open("/proc/net/dev") as f:
+                for ln in f:
+                    if ":" in ln:
+                        pr = ln.split(":")[1].split()
+                        tot += int(pr[0]) + int(pr[8])
+            return tot
+        except Exception:
+            pass
+    return None
+
+
+def _net_kbps() -> float:
+    tot = _net_total_bytes()
+    if tot is None:
+        return 0.0
+    now = time.time()
+    prev_t, prev = _net_prev["t"], _net_prev["total"]
+    _net_prev.update(t=now, total=tot)
+    if not prev_t:
+        return 0.0
+    return round(max(0.0, (tot - prev) / 1024 / max(0.001, now - prev_t)), 1)
+
+
+async def _metrics_sampler() -> None:
+    """Sample cpu/mem/net once a second into a ring for the console's micro-histograms."""
+    while not SHUTDOWN.is_set():
+        try:
+            m = await asyncio.to_thread(system_metrics)
+            ok = m.get("available")
+            _MHIST["cpu"].append(m.get("cpu_percent", 0.0) if ok else 0.0)
+            _MHIST["mem"].append(m.get("mem_percent", 0.0) if ok else 0.0)
+            _MHIST["net"].append(await asyncio.to_thread(_net_kbps))
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(SHUTDOWN.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+def system_history(window: int = 60) -> dict:
+    n = max(1, min(90, window))
+    return {k: [round(x, 1) for x in list(v)[-n:]] for k, v in _MHIST.items()}
+
+
+def _find_player(name: str):
+    key = name.lstrip("@").lower()
+    for w, pl in list(PLAYERS.items()):
+        if pl.name.lower() == key or (pl.fren_tag or "").lower() == key:
+            return w, pl
+    return None, None
+
+
+async def op_mute(name: str, on: bool, reason: str = "") -> str:
+    w, pl = _find_player(name)
+    if not pl:
+        return f"no player '{name}'"
+    pl.muted = bool(on)
+    if on:
+        push(pl, c(CYAN, "MUTED — your says stay local until an operator unmutes you. The Oracle still answers.")
+             + (c(GREY, f"  ({reason})") if reason else ""))
+    else:
+        push(pl, c(GREEN, "unmuted — say away, fren"))
+    try:
+        await show(pl)
+    except Exception:
+        pass
+    return f"{pl.name} {'muted' if on else 'unmuted'}"
+
+
+async def op_timeout(name: str, minutes: int, reason: str = "") -> str:
+    w, pl = _find_player(name)
+    if not pl:
+        return f"no player '{name}'"
+    pl.timeout_until = time.time() + max(1, int(minutes)) * 60
+    push(pl, c(GOLD, f"TIMEOUT — {int(minutes)}:00. Your seat and progress are safe; chat re-opens at zero.")
+         + (c(GREY, f"  ({reason})") if reason else ""))
+    try:
+        await show(pl)
+    except Exception:
+        pass
+    return f"{pl.name} timed out {int(minutes)}m"
+
+
+async def op_watch(name: str, on: bool) -> str:
+    w, pl = _find_player(name)
+    if not pl:
+        return f"no player '{name}'"
+    pl.watched = bool(on)
+    return f"{'watching' if on else 'unwatched'} {pl.name}"
+
+
+# Course modules + knowledge QA are the Architect's/Warden's — stubbed until wired (see ROADMAP).
+_QA_FLAGS: list = []
+_MODULES = [
+    {"lvl": 1, "code": "BTC101", "name": "Bitcoin Self-Custody", "path": "BITCOIN › CUSTODY",
+     "prereq": "", "rune": "PACS•ARCADE•BTC101", "access": "OPEN"},
+    {"lvl": 2, "code": "CONSENSUS", "name": "Bitcoin Consensus", "path": "BITCOIN › CONSENSUS",
+     "prereq": "BTC101", "rune": "PACS•ARCADE•CONSENSUS", "access": "AFTER BTC101"},
+]
+_SITELINK = {"mode": "testing" if LOCAL_SITE_URL else "synced",
+             "url": LOCAL_SITE_URL or "https://pacsarcade.org"}
+
+
 # --- command dispatch --------------------------------------------------------
 DIRS = {"north", "south", "east", "west", "up", "down"}
 DIR_ALIAS = {"n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down"}
@@ -1410,6 +1576,11 @@ async def dispatch(p: Player, line: str) -> bool:
     verb = verb.lower()
     rest = rest.strip()
     p.idle_since = time.time()
+
+    # Operator timeout: benched except for quit/look/help.
+    if p.timeout_until > time.time() and verb not in ("quit", "exit", "q", "look", "l", "help", "?"):
+        push(p, c(GOLD, f"you're benched — {int(p.timeout_until - time.time())}s left. seat + progress safe."))
+        return True
 
     # While a question is pending, most input IS the answer — so "proof of work" is judged even
     # if it starts with a command word like 'i' (inventory). A few meta verbs still work mid-question.
@@ -1491,10 +1662,13 @@ async def dispatch(p: Player, line: str) -> bool:
     elif verb == "say":
         if rest:
             who = f"@{p.fren_tag}" if p.fren_tag else p.name
-            push(p, c(GREEN, "you say: ") + c(BOLD, rest) + (c(GREY, "  (→ matrix)") if CHAT_MATRIX else ""))
-            await broadcast_room(p.room, c(CYAN, f"{who} says: ") + c(BOLD, rest), exclude=p)
-            if CHAT_MATRIX:
-                asyncio.create_task(forward_chat_to_matrix(p.room, who, rest))
+            if p.muted:                                   # muted: your says stay local
+                push(p, c(GREEN, "you say: ") + c(BOLD, rest) + c(GREY, "  (muted — local only)"))
+            else:
+                push(p, c(GREEN, "you say: ") + c(BOLD, rest) + (c(GREY, "  (→ matrix)") if CHAT_MATRIX else ""))
+                await broadcast_room(p.room, c(CYAN, f"{who} says: ") + c(BOLD, rest), exclude=p)
+                if CHAT_MATRIX:
+                    asyncio.create_task(forward_chat_to_matrix(p.room, who, rest))
         else:
             push(p, c(GREY, "say what?"))
     elif verb in ("certs", "runes", "certificates"):
@@ -1693,6 +1867,7 @@ async def main() -> None:
     http_srv = _start_admin_http()
     _start_console(LOOP)
     ticker = asyncio.create_task(_status_ticker())
+    sampler = asyncio.create_task(_metrics_sampler())      # feeds the console's CPU/MEM/NET histograms
     tok_note = "  (auto-generated; set PA_ADMIN_TOKEN to pin it)" if ADMIN_TOKEN_GENERATED else ""
     print("  Operator console: type 'help' here.")
     print(f"    admin token : {ADMIN_TOKEN}{tok_note}   (in-MUD: 'admin {ADMIN_TOKEN}')")
@@ -1707,6 +1882,7 @@ async def main() -> None:
             await SHUTDOWN.wait()
     finally:
         ticker.cancel()
+        sampler.cancel()
         for w, pl in list(PLAYERS.items()):
             try:
                 await pl.send(c(MAG, "\r\nThe arcade lights power down. Your progress is saved. 💜\r\n"))
