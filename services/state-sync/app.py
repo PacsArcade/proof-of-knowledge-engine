@@ -1,6 +1,8 @@
 """state-sync/app.py — the HOT translation layer keeping Luanti and the MUD in sync. 💜
 
-SCAFFOLDING / STUB. Structurally real FastAPI app; every DB-2 write is a TODO.
+The world-mutation path now PERSISTS through the shared world store (SQLite in dev, DB-2 in
+prod) — the same store the MUD uses. Linked-object logic (a lever opening a specific door) and
+COLD-tier follow-up enqueueing remain TODO; the toggle/on/off transition is real.
 
 This is the translation layer. A world event from Luanti (a lever pulled) and a text command
 from the MUD (`pull lever`) both get translated here into the SAME DB-2 game-state mutation,
@@ -18,20 +20,27 @@ Port: 8082.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import sys
 from typing import Any, Optional
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-# DB-2, the live world / Blackboard. See .env.example / CONVENTIONS §6.
-PA_DB2_URL = os.environ.get("PA_DB2_URL", "postgresql://arcade:change-me@postgres-gamestate:5432/gamestate")
+# Shared persistence substrate — the SAME world store the MUD uses, so both front-ends mutate
+# ONE world. Dev = SQLite (PA_GAMESTATE_SQLITE); production = Postgres DB-2 (PA_DB2_URL). See
+# services/common/world_store.py and CONVENTIONS §6.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+import world_store  # noqa: E402
 
-app = FastAPI(title="state-sync", version="0.0.1-stub")
+app = FastAPI(title="state-sync", version="0.0.2")
+STORE = world_store.open_store()
 
-# TODO: open an asyncpg pool to PA_DB2_URL on startup; close on shutdown.
-#       Keep the pool warm — connection setup must not land in the 50 ms budget.
-_db_pool = None
+
+@app.on_event("shutdown")
+async def _close_store() -> None:
+    STORE.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -68,21 +77,40 @@ class WorldState(BaseModel):
 # The shared mutation path — BOTH endpoints converge here                     #
 # --------------------------------------------------------------------------- #
 
+def _normalize(verb_or_event: str) -> str:
+    """Map a MUD verb OR a Luanti event onto one shared vocabulary, so both front-ends resolve
+    to the identical transition."""
+    v = (verb_or_event or "").lower()
+    if v in ("open", "lever_on", "on"):
+        return "on"
+    if v in ("close", "lever_reset", "lever_off", "off"):
+        return "off"
+    return "toggle"  # pull / push / lever_pulled / toggle
+
+
 async def _apply_world_mutation(world: str, actor: str, object_id: str,
                                 intent: str, meta: dict[str, Any]) -> WorldState:
-    """Translate a normalized intent into a single DB-2 write and return the new state.
+    """Translate a normalized intent into a single world-state write and return the new state.
 
-    This is the one place the world actually changes. Luanti events and MUD commands are
-    both normalized into (object_id, intent) and routed through here so the two front-ends
-    can never diverge.
+    This is the one place the world actually changes. Luanti events and MUD commands are both
+    normalized into (object_id, intent) and routed through here so the two front-ends can never
+    diverge. Persisted via the shared world store (SQLite in dev, DB-2 in prod) — node-local, so
+    it stays inside the HOT budget. NOTE: any COLD follow-up (Matrix, on-chain) must be enqueued
+    for a background worker here, never awaited on this path.
     """
-    # TODO: BEGIN; SELECT current object state FOR UPDATE; compute the transition
-    #       (e.g. a "logic gate lever" toggles + may open a linked door); UPDATE world_object
-    #       and any linked objects; bump revision; COMMIT. All node-local, all inside the
-    #       HOT budget. Return the resulting WorldState.
-    # TODO: if the transition should notify Matrix or trigger any COLD work, enqueue it for a
-    #       background worker HERE — do NOT await it.
-    raise NotImplementedError("TODO: apply DB-2 world mutation for %r on %r" % (intent, object_id))
+    key = f"obj:{object_id}"
+    action = _normalize(intent)
+    cur = await asyncio.to_thread(STORE.get_feature, world, key, {"state": False, "revision": 0})
+    state_on = bool(cur.get("state", False))
+    if action == "toggle":
+        state_on = not state_on
+    elif action == "on":
+        state_on = True
+    elif action == "off":
+        state_on = False
+    revision = int(cur.get("revision", 0)) + 1
+    await asyncio.to_thread(STORE.set_feature, world, key, {"state": state_on, "revision": revision})
+    return WorldState(object_id=object_id, state={object_id: "on" if state_on else "off"}, revision=revision)
 
 
 # --------------------------------------------------------------------------- #

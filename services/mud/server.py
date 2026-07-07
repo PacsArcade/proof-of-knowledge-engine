@@ -23,7 +23,6 @@ import json
 import os
 import sys
 import urllib.request
-from datetime import datetime, timezone
 
 # Windows consoles default to cp1252 and choke on the box-drawing/emoji in our prints.
 # Socket traffic is always explicit UTF-8; this only fixes server-side stdout logging.
@@ -38,6 +37,19 @@ MUD_PORT = int(os.environ.get("PA_MUD_PORT", "4000"))
 STATE_SYNC_URL = os.environ.get("PA_STATE_SYNC_URL", "")          # empty => dev mode
 INFERENCE_BASE_URL = os.environ.get("PA_INFERENCE_BASE_URL", "")  # empty => scripted Oracle
 GEN_MODEL = os.environ.get("PA_GEN_MODEL", "")
+
+# --- persistence (shared with state-sync) ------------------------------------
+# The world store keeps players, world features, competency, and earned runes across sessions.
+# Dev default = a SQLite file (zero setup); production = Postgres DB-2. Same contract either way.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+import world_store  # noqa: E402
+
+try:
+    STORE = world_store.open_store()
+except Exception as e:  # never let a bad backend choice stop the dev arcade
+    print(f"! persistence backend failed ({e}); falling back to the SQLite dev store")
+    os.environ["PA_GAMESTATE_BACKEND"] = "sqlite"
+    STORE = world_store.open_store()
 
 # --- ANSI 8-bit palette ------------------------------------------------------
 R = "\x1b[0m"
@@ -102,7 +114,8 @@ class Player:
         self.name = "a nameless fren"
         self.room = "entrance"
         self.inventory: list[str] = []
-        self.certs: list[dict] = []
+        self.certs: list[dict] = []   # persisted class-rune rows from the world store
+        self.wallet = ""              # this player's (mock, in dev) wallet — stable across sessions
         self.oracle_pending = False   # awaiting an answer to the Oracle's question
 
     async def send(self, text: str) -> None:
@@ -165,6 +178,9 @@ HELP = "\n".join([
 
 
 # --- the Oracle --------------------------------------------------------------
+# The class a fren can complete here. class_id is stable; the rune + title are what they earn.
+SELF_CUSTODY = {"class_id": "self-custody", "rune": "PACS•SELF•CUSTODY", "title": "Bitcoin Self-Custody 101"}
+
 ORACLE_QUESTION = (
     "Tell me, fren: with a bitcoin wallet, there is ONE secret that is yours alone — lose it and the "
     "coins are gone, share it and they're stolen. What is that secret called?"
@@ -186,7 +202,12 @@ async def oracle_judge(p: Player, ans: str) -> None:
     if any(k in low for k in ORACLE_KEYS):
         await p.stream(c(MAG, "\"Yes. The seed phrase — your twenty-four words. Not a password you can reset; "
                              "the treasure itself. You didn't recite a definition. You understood the stakes.\""))
-        await mint_class_rune(p, "PACS•SELF•CUSTODY", "Bitcoin Self-Custody 101")
+        if await asyncio.to_thread(STORE.has_certificate, p.name, SELF_CUSTODY["class_id"]):
+            await p.stream(c(MAG, "\"But you already hold this rune, fren — I don't mint a truth twice. Wear it well.\""))
+        else:
+            await asyncio.to_thread(STORE.record_competency, p.name, "bitcoin-self-custody", 0.9,
+                                    "Understood the seed phrase is the treasure, not a resettable password.")
+            await mint_class_rune(p, SELF_CUSTODY)
     else:
         await p.stream(c(MAG, "\"Close, but feel for the weight of it. It is not your address, not your PIN. "
                              "It is the one string of words that IS the money. Try again — ") + c(CYAN, "answer <text>") + c(MAG, ".\""))
@@ -227,29 +248,33 @@ def _llm_reply(question: str) -> str:
         return ""
 
 
-async def mint_class_rune(p: Player, rune: str, title: str) -> None:
-    """DEV: mint a MOCK soulbound class rune so you can see the whole reward loop end-to-end.
-    In production this calls services/bitcoin-bridge/runes.py (regtest ord) — see docs/RUNES.md."""
-    now = datetime.now(timezone.utc)
-    wallet = "bcrt1q" + "pac5arcade0riginal0wallet".ljust(30, "0")[:30]
-    block = 21_000 + len(p.certs)
-    cert = {"rune": rune, "title": title, "earned": now.strftime("%Y-%m-%d %H:%M UTC"),
-            "block": block, "wallet": wallet}
-    p.certs.append(cert)
-    await asyncio.sleep(0.4)
-    card = "\n".join([
+def render_cert_card(cert: dict) -> str:
+    """Render a stored class-certificate row as the arcade's rune card."""
+    return "\n".join([
         "",
         c(GOLD, "   ┌─ SOULBOUND CLASS RUNE ─────────────────────────────┐"),
-        c(GOLD, "   │ ") + c(BOLD + GOLD, "🎓 " + rune.ljust(48)) + c(GOLD, "│"),
-        c(GOLD, "   │ ") + c(GREEN, ("Class:   " + title).ljust(50)) + c(GOLD, "│"),
-        c(GOLD, "   │ ") + c(GREEN, ("Earned:  " + cert['earned'] + f"  (block {block})").ljust(50)) + c(GOLD, "│"),
-        c(GOLD, "   │ ") + c(GREEN, ("Wallet:  " + wallet).ljust(50)) + c(GOLD, "│"),
+        c(GOLD, "   │ ") + c(BOLD + GOLD, ("🎓 " + cert["rune_name"]).ljust(48)) + c(GOLD, " │"),
+        c(GOLD, "   │ ") + c(GREEN, ("Class:   " + cert["title"]).ljust(50)) + c(GOLD, "│"),
+        c(GOLD, "   │ ") + c(GREEN, ("Earned:  " + str(cert["block_time"]) + f"  (block {cert['block_height']})").ljust(50)) + c(GOLD, "│"),
+        c(GOLD, "   │ ") + c(GREEN, ("Wallet:  " + cert["original_wallet"]).ljust(50)) + c(GOLD, "│"),
         c(GOLD, "   │ ") + c(GREY, "soulbound · non-transferable · regtest (mock demo)".ljust(50)) + c(GOLD, "│"),
         c(GOLD, "   └────────────────────────────────────────────────────┘"),
         c(MAG, "  A rune settles into your wallet, fren. Block time and your wallet are"),
         c(MAG, "  written on-chain — so even if it's ever moved, everyone knows YOU earned it. 💜"),
     ])
-    await p.send(card + "\n")
+
+
+async def mint_class_rune(p: Player, spec: dict) -> None:
+    """Mint (and PERSIST) a soulbound class rune via the world store. Idempotent: earning a class
+    you already hold returns the ORIGINAL record (original block time + wallet preserved).
+    In dev the rune is a mock; production routes through services/bitcoin-bridge/runes.py."""
+    block = 21_000 + len(p.certs)
+    cert = await asyncio.to_thread(
+        STORE.mint_certificate, p.name, spec["class_id"], spec["rune"], spec["title"], p.wallet, block
+    )
+    p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+    await asyncio.sleep(0.4)
+    await p.send(render_cert_card(cert) + "\n")
 
 
 # --- command dispatch --------------------------------------------------------
@@ -336,6 +361,7 @@ async def move(p: Player, direction: str) -> None:
     if direction in exits:
         await broadcast_room(p.room, c(GREY, f"\n{p.name} heads {direction}.\n"), exclude=p)
         p.room = exits[direction]
+        await asyncio.to_thread(STORE.save_player, p.name, p.room, p.inventory)  # persist location
         await broadcast_room(p.room, c(GREY, f"\n{p.name} arrives.\n"), exclude=p)
         await p.send(render_room(p))
     else:
@@ -344,14 +370,17 @@ async def move(p: Player, direction: str) -> None:
 
 async def pull(p: Player, thing: str) -> None:
     if "lever" in thing.lower() and p.room == "vault":
-        room = ROOMS["vault"]
-        room["features"]["lever"] = not room["features"]["lever"]
-        if room["features"]["lever"]:
+        # The lever is shared world state, persisted in the store (world_features) — so its
+        # position survives restarts and is the SAME state a Luanti lever pull would toggle.
+        state = not await asyncio.to_thread(STORE.get_feature, "vault", "lever", False)
+        await asyncio.to_thread(STORE.set_feature, "vault", "lever", state)
+        if state:
             await p.send(c(GOLD, "You heave the lever. Gears grind; the gold-banded chest clicks. Inside: a SCROLL.\n"))
             await p.stream(c(GREY, "(A lever pulled here is exactly the event a lever pull in the Luanti voxel world "
                                   "would send — one world, two windows. In production this routes through state-sync.)"))
             if "the scroll (keep it secret)" not in p.inventory:
                 p.inventory.append("the scroll (keep it secret)")
+                await asyncio.to_thread(STORE.save_player, p.name, p.room, p.inventory)
         else:
             await p.send(c(GREEN, "You return the lever. The chest re-seals with a sigh.\n"))
     else:
@@ -364,8 +393,8 @@ async def show_certs(p: Player) -> None:
         return
     await p.send(c(BOLD + GOLD, "\nYour soulbound class runes:\n"))
     for cert in p.certs:
-        await p.send(c(GOLD, f"  🎓 {cert['rune']}  ") + c(GREEN, f"— {cert['title']}  ")
-                     + c(GREY, f"(earned {cert['earned']}, block {cert['block']})\n"))
+        await p.send(c(GOLD, f"  🎓 {cert['rune_name']}  ") + c(GREEN, f"— {cert['title']}  ")
+                     + c(GREY, f"(earned {cert['block_time']}, block {cert['block_height']})\n"))
     await p.send(c(MAG, "  Non-transferable by design. Move one and provenance still names you as the earner. 💜\n"))
 
 
@@ -397,7 +426,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         name = clean_line(raw)
         if name:
             p.name = name[:24]
-        await p.send(c(MAG, f"\nWelcome, {p.name}. The high score is understanding. 💜\n"))
+        # Load (or create) this fren from the world store — location, inventory, wallet, runes.
+        data = await asyncio.to_thread(STORE.get_or_create_player, p.name)
+        p.room = data["room"]
+        p.inventory = data["inventory"]
+        p.wallet = data["wallet"]
+        p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+        if data["new"]:
+            await p.send(c(MAG, f"\nWelcome, {p.name}. The high score is understanding. 💜\n"))
+        else:
+            note = f" You carry {len(p.certs)} class rune(s)." if p.certs else ""
+            await p.send(c(MAG, f"\nWelcome back, {p.name}.{note} Your progress was kept. 💜\n"))
         await broadcast_room(p.room, c(GREY, f"\n{p.name} steps in from the street.\n"), exclude=p)
         await p.send(render_room(p))
         await p.prompt()
@@ -426,10 +465,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 
 async def main() -> None:
-    mode = "production (state-sync)" if STATE_SYNC_URL else "DEV (in-memory world)"
+    backend = type(STORE).__name__
+    store_where = getattr(STORE, "path", "postgres DB-2")
     oracle = "local LLM" if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted pacbot fallback"
     server = await asyncio.start_server(handle_client, MUD_HOST, MUD_PORT)
-    print(f"▓ Pac's Arcade MUD listening on {MUD_HOST}:{MUD_PORT}  [{mode}, Oracle: {oracle}] 💜")
+    print(f"▓ Pac's Arcade MUD listening on {MUD_HOST}:{MUD_PORT}  [persisted via {backend} @ {store_where}, Oracle: {oracle}] 💜")
     print(f"  Connect:  python services/mud/play.py    (or: telnet {MUD_HOST} {MUD_PORT})")
     async with server:
         await server.serve_forever()

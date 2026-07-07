@@ -104,6 +104,11 @@ block time and original wallet on the card, exactly like the real thing (regtest
 Then go `east` to the Puzzle Vault and `pull lever`. The Oracle talks to your local LLM if one is
 running (`PA_INFERENCE_BASE_URL` + `PA_GEN_MODEL`); otherwise it falls back to a scripted pacbot.
 
+Your progress **persists**: room, inventory, and earned runes are written to a local SQLite file
+(`data/gamestate.dev.sqlite`), so reconnecting with the same name resumes right where you left off —
+and the Oracle won't mint a rune you already hold. It's the exact same store contract the
+production node uses against Postgres DB-2 (`services/common/world_store.py`).
+
 ---
 
 ## 🔧 Manual local build (server admin)
