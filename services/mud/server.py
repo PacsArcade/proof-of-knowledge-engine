@@ -2614,8 +2614,16 @@ async def main() -> None:
     backend = type(STORE).__name__
     store_where = getattr(STORE, "path", "postgres DB-2")
     oracle = "local LLM" if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted pacbot fallback"
-    SERVER = await asyncio.start_server(handle_client, MUD_HOST, MUD_PORT)
-    ws_server = await asyncio.start_server(_ws_client, MUD_HOST, MUD_WS_PORT)
+    try:
+        SERVER = await asyncio.start_server(handle_client, MUD_HOST, MUD_PORT)
+        ws_server = await asyncio.start_server(_ws_client, MUD_HOST, MUD_WS_PORT)
+    except OSError as e:
+        print(f"! POKEMUD couldn't bind {MUD_HOST}:{MUD_PORT} — another node is already running "
+              f"on this box ({e.strerror or e}).")
+        print("    find it :  netstat -ano | findstr :4000      then:  taskkill /PID <pid> /F")
+        print("    or run a second node on its own ports:")
+        print("               PA_MUD_PORT=4100 PA_MUD_ADMIN_PORT=4101 PA_MUD_WS_PORT=4102  python services/mud/server.py")
+        return
     http_srv = _start_admin_http()
 
     def row(label: str, value: str, vcol: str = "") -> str:
