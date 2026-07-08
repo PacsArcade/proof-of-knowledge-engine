@@ -89,6 +89,33 @@ A verse alone is a room; docked, it's part of the pokenetwork:
 4. **Get certified**: the `issue-node-cert` skill quizzes the operator, signs a
    "Certified Education Node" credential and publishes your verse to the federated map.
 
+## Game chat — in-verse, Matrix channel, and the switches
+
+Every verse gets a **game chat**: in-room `say` between frens, with an optional **Matrix
+channel** so the conversation lives on even when nobody's logged in (orbee is the arcade
+floor; Matrix is the classroom — the verse chat bridges to Matrix).
+
+**Set up the Matrix channel** for your verse:
+
+1. Provision a room on your homeserver (matrix-bridge does this in the stack):
+   `#<verse-id>-game:yourserver` — e.g. `#pacsarcade-game:pacsarcade.org`.
+2. Point the node at the bridge: `PA_MATRIX_BRIDGE_URL=http://matrix-bridge:8084`.
+3. Turn the mirror on: console `chat matrix on` (or `PA_CHAT_MATRIX=on`). In-room `say`
+   now relays to the channel, off the hot path — the MUD never blocks on Matrix.
+
+**The switches** (everyone gets the level of control that's theirs):
+
+| Who | Control | How |
+|---|---|---|
+| Player | mute game chat for *themselves* | in-game `chat on|off` (persists across sessions) |
+| Operator | node-wide kill switch | console `chat on|off` · web console **GAME CHAT** toggle · `POST /gamechat` |
+| Operator | restrict specific @tags | console `chat block @tag` / `chat allow @tag` · web console **RESTRICT @TAG** · `POST /chat/restrict` |
+| Operator | Matrix mirror on/off | console `chat matrix on|off` · web console **MATRIX CHAT BRIDGE** · `POST /chat` |
+| Operator | per-player moderation | mute / timeout / kick (branded, player-respecting messages) |
+
+Restricted or muted frens still see their own says locally — consequences, not
+prohibitions; nothing is silently swallowed. `chat status` shows the whole picture.
+
 ## House rules for verses
 
 - **Education first.** Every rune must be earned by demonstrated understanding — trials

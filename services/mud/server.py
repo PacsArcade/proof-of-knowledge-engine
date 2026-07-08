@@ -98,6 +98,12 @@ ADMIN_HTTP_HOST = os.environ.get("PA_MUD_ADMIN_HOST", "127.0.0.1")
 ADMIN_HTTP_PORT = int(os.environ.get("PA_MUD_ADMIN_PORT", "4001"))
 CHAT_MATRIX = os.environ.get("PA_CHAT_MATRIX", "off").lower() in ("1", "true", "on", "yes")
 MATRIX_BRIDGE_URL = os.environ.get("PA_MATRIX_BRIDGE_URL", "http://matrix-bridge:8084")
+# Game chat (in-room `say` + any bridge): ON by default; operators can kill it globally,
+# restrict specific @tags, and every player can mute it for themselves ('chat off').
+GAME_CHAT = os.environ.get("PA_GAME_CHAT", "on").lower() not in ("0", "off", "false", "no")
+# DEMO MODE: on by default until the courses are audited — runes etched are PRACTICE
+# runes, clearly labeled, never presented as real credentials.
+DEMO_MODE = os.environ.get("PA_DEMO_MODE", "on").lower() not in ("0", "off", "false", "no")
 
 SERVER = None
 LOOP = None
@@ -303,33 +309,35 @@ def help_lines(p: "Player") -> list[str]:
     from where the player actually stands, so 'down' is never a lie)."""
     boss_room = _npc_room("boss")
     boss = hint_to(p.room, boss_room, "the boss") if boss_room else "no boss in this verse (yet)"
+    t_rid = _npc_room("socratic")
+    tid = get_room(t_rid)["npcs"][0] if t_rid else "npc"
     return [
         "  ▸ MOVE",
         "   north south east west up down     shortcuts: n s e w u d",
         "   go <dir>  ·  look (l)             look around the room",
         "",
         "  ▸ LEARN",
-        "   talk oracle          begin the Oracle's trial",
-        "   ask oracle <q>       ask anything  ·  answer <text>  reply",
+        f"   talk {tid:<15} begin the trial  ·  ask {tid} <q>  ask",
+        "   answer <text>        reply to a question",
         f"   challenge            {boss}",
         "   pull lever           use a feature in the room",
         "",
         "  ▸ YOU",
-        "   stats · profile      your attributes / your identity card",
-        "   certs · inventory    your runes / what you carry",
+        "   stats                your level · xp · energy",
+        "   profile              your identity card",
+        "   certs · inventory    runes you've earned · what you carry",
         "   examine <name>       look at another fren",
         "",
         "  ▸ IDENTITY",
         "   link fren <name>     claim your @fren   (then: verify <code>)",
         "   link nostr|space     bind identities  ·  backup   anchor it",
         "",
-        "  ▸ SOCIAL",
-        "   say <msg> · who      talk to the room / see who's online",
-        "   home · gallery       your own room / the art on display",
-        "   invite <fren> · visit <fren>    have frens over",
-        "   quit                 save + leave",
-        "",
-        "  Type naturally — 'sup', 'go down', 'who is the boss' all work.",
+        "  ▸ CHAT & HOME",
+        "   say <msg> · who      talk to the room · see who's online",
+        "   chat on|off          mute game chat, just for you",
+        "   home  (/home)        your own room · rename room <name>",
+        "   /fren invite|visit <name>    have frens over · drop by",
+        "   gallery · view <n>   the art on display  ·  quit  save+leave",
     ]
 
 
@@ -440,6 +448,7 @@ class Player:
         self.session_start_xp = 0          # snapshots for the "goodnight" session summary
         self.session_start_runes = 0
         self.muted = False                 # operator moderation
+        self.chat_muted = False            # player's OWN choice: mute game chat ('chat off')
         self.timeout_until = 0.0
         self.watched = False
 
@@ -460,7 +469,7 @@ def focus_room(p: Player) -> None:
     room = get_room(p.room)
     lines: list[str] = []
     if room.get("art"):
-        lines += room["art"] + [""]
+        lines += center_block(room["art"]) + [""]
     lines += _wrap(room["desc"], BOARD_W - 4)
     lines.append("")
     if room.get("home_of"):                    # a player's own room: their showcase
@@ -652,7 +661,8 @@ RESERVED_NAMES = {"help", "quit", "exit", "q", "look", "l", "admin", "boss",
                   "say", "go", "north", "south", "east", "west", "up", "down", "n", "s", "e", "w",
                   "talk", "answer", "ask", "challenge", "fight", "stats", "profile", "certs", "runes",
                   "inventory", "inv", "i", "backup", "link", "verify", "who", "pull", "examine",
-                  "home", "rename", "invite", "visit", "gallery", "view", "enter"} | set(NPCS)
+                  "home", "rename", "invite", "visit", "gallery", "view", "enter",
+                  "chat", "fren"} | set(NPCS)
 
 
 async def _prompt_again(p: "Player", text: str) -> None:
@@ -663,10 +673,19 @@ async def _prompt_again(p: "Player", text: str) -> None:
         await p.send(c(AMBER, "\r\n" + text + " "))
 
 
+def center_block(lines: list[str]) -> list[str]:
+    """Center a block of art in the frame as ONE unit — every line shifts by the same
+    offset, so the piece's internal alignment survives."""
+    width = max((dwidth(l) for l in lines), default=0)
+    off = max(0, (BOARD_W - 2 - width) // 2)
+    return [" " * off + l for l in lines]
+
+
 async def animate(p: Player, frames: list[list[str]], title: str, color: str = GOLD, hold: float = 0.5) -> None:
-    """Play ASCII frames inside the window — the primitive bosses & lesson effects use."""
+    """Play ASCII frames inside the window — the primitive bosses & lesson effects use.
+    Frames are centered in the frame so encounters own the stage, not the left edge."""
     for frame in frames:
-        focus_text(p, title, frame, color)
+        focus_text(p, title, center_block(frame), color)
         await show(p)
         await asyncio.sleep(hold)
 
@@ -714,7 +733,7 @@ async def trial_judge(p: Player, ans: str) -> None:
 
 
 def cert_card_lines(cert: dict) -> list[str]:
-    return [
+    lines = [
         "",
         "  *  " + cert["rune_name"],
         "",
@@ -723,9 +742,18 @@ def cert_card_lines(cert: dict) -> list[str]:
         "  Wallet:  " + cert["original_wallet"],
         "  soulbound · non-transferable · regtest (mock)",
         "",
-        "  Etched into your wallet. Block time + wallet live on-chain — even",
-        "  if it's ever moved, everyone knows YOU earned it. 💜",
     ]
+    if DEMO_MODE:
+        lines += [
+            "  ⚠ DEMO rune — practice only. Courses aren't rated for real",
+            "  certification yet; nothing here is a credential.",
+        ]
+    else:
+        lines += [
+            "  Etched into your wallet. Block time + wallet live on-chain — even",
+            "  if it's ever moved, everyone knows YOU earned it. 💜",
+        ]
+    return lines
 
 
 async def etch_class_rune(p: Player, spec: dict, xp: int = 100) -> None:
@@ -737,12 +765,13 @@ async def etch_class_rune(p: Player, spec: dict, xp: int = 100) -> None:
     old_level = p.level
     res = await asyncio.to_thread(STORE.add_xp, p.name, xp); p.xp, p.level = res["xp"], res["level"]
     p.pending_fx.append("etch")                        # cue the web client to glow/particle the etch
-    event("etch", f"{display_name(p)} etched {spec['rune']} (+{xp} xp)")
+    demo = " [demo]" if DEMO_MODE else ""
+    event("etch", f"{display_name(p)} etched {spec['rune']}{demo} (+{xp} xp)")
     await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.3)
-    focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
+    focus_text(p, "Soulbound Class Rune" + (" · DEMO" if DEMO_MODE else ""), cert_card_lines(cert), GOLD)
     if p.level > old_level:
         p.pending_fx.append("levelup")
-    push(p, c(GOLD, f"🎓 etched {spec['rune']}  (+{xp} xp)"))
+    push(p, c(GOLD, f"🎓 etched {spec['rune']}{demo}  (+{xp} xp)"))
 
 
 # --- identity: @fren / nostr / spaces, pairing code, on-chain backup ---------
@@ -854,11 +883,12 @@ async def show_certs(p: Player) -> None:
         focus_text(p, "Your runes", ["", "  No class runes yet.", "",
                                       f"  {where} — runes are earned there. 🎓"], GOLD)
         return
-    lines = ["", "  Your soulbound class runes:", ""]
+    lines = ["", "  Your soulbound class runes:" + ("   (DEMO — practice only)" if DEMO_MODE else ""), ""]
     for cert in p.certs:
         lines.append(f"  * {cert['rune_name']}  -  {cert['title']}")
         lines.append(f"       earned {cert['block_time']} · block {cert['block_height']}")
-    lines += ["", "  Non-transferable. Move one and provenance still names you."]
+    lines += ["", ("  ⚠ Demo runes — not real credentials until the courses are audited."
+                   if DEMO_MODE else "  Non-transferable. Move one and provenance still names you.")]
     focus_text(p, "Your runes", lines, GOLD)
 
 
@@ -995,6 +1025,9 @@ def stats_json() -> dict:
         "store": {"backend": type(STORE).__name__, "location": getattr(STORE, "path", "postgres DB-2")},
         "oracle": ("local-llm:" + GEN_MODEL) if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted",
         "chat_matrix": CHAT_MATRIX,
+        "game_chat": GAME_CHAT,
+        "chat_blocked": _load_chatblocks(),
+        "demo_mode": DEMO_MODE,
         "qa": {"flagged": sum(1 for f in _QA_FLAGS if f["status"] == "FLAGGED"),
                "in_review": sum(1 for f in _QA_FLAGS if f["status"] == "IN REVIEW"),
                "corrected": sum(1 for f in _QA_FLAGS if f["status"] == "CORRECTED"),
@@ -1063,6 +1096,70 @@ def set_chat_matrix(on: bool) -> str:
     return f"matrix chat {'ON — say now mirrors to the Matrix verse' if on else 'off — local rooms only'}"
 
 
+# --- game-chat controls (global kill switch + per-@tag restriction) ------------
+CHATBLOCK_FILE = os.environ.get("PA_CHATBLOCK_FILE", os.path.join(DATA_DIR, "chatblock.json"))
+
+
+def _load_chatblocks() -> list[str]:
+    try:
+        with open(CHATBLOCK_FILE) as f:
+            return [str(t).lstrip("@").lower() for t in json.load(f).get("blocked", [])]
+    except Exception:
+        return []
+
+
+def set_game_chat(on: bool) -> str:
+    global GAME_CHAT
+    GAME_CHAT = bool(on)
+    event("admin", f"game chat {'ON' if on else 'OFF (node-wide)'}")
+    return f"game chat {'ON — frens can say to the room' if on else 'OFF — says are local-only node-wide'}"
+
+
+def chat_restrict(tag: str, blocked: bool) -> str:
+    tag = tag.strip().lstrip("@").lower()
+    if not tag:
+        return "usage: chat block|allow <@tag>"
+    blocks = _load_chatblocks()
+    if blocked and tag not in blocks:
+        blocks.append(tag)
+    if not blocked:
+        blocks = [b for b in blocks if b != tag]
+    os.makedirs(os.path.dirname(os.path.abspath(CHATBLOCK_FILE)), exist_ok=True)
+    with open(CHATBLOCK_FILE, "w") as f:
+        json.dump({"blocked": blocks}, f, indent=2)
+    event("admin", f"chat {'restricted' if blocked else 'allowed'} for @{tag}")
+    return f"@{tag} chat {'restricted — their says stay local' if blocked else 'allowed'}"
+
+
+def chat_blocked(p: "Player") -> bool:
+    blocks = _load_chatblocks()
+    return p.name.lower() in blocks or (p.fren_tag or "").lower() in blocks
+
+
+def chat_status() -> dict:
+    return {"game_chat": GAME_CHAT, "matrix": CHAT_MATRIX, "blocked": _load_chatblocks()}
+
+
+def chat_admin(rest: str) -> str:
+    """One grammar for every operator surface: console, in-MUD admin, HTTP."""
+    sub, _, arg = rest.partition(" ")
+    sub, arg = sub.lower().strip(), arg.strip()
+    if sub in ("on", "off"):
+        return set_game_chat(sub == "on")
+    if sub == "matrix":
+        return set_chat_matrix(arg.lower() in ("on", "1", "true", "yes"))
+    if sub == "block":
+        return chat_restrict(arg, True)
+    if sub == "allow":
+        return chat_restrict(arg, False)
+    if sub in ("", "status", "blocks"):
+        st = chat_status()
+        blocked = (", ".join("@" + b for b in st["blocked"])) if st["blocked"] else "none"
+        return (f"game chat {'ON' if st['game_chat'] else 'OFF'} · matrix "
+                f"{'ON' if st['matrix'] else 'off'} · restricted tags: {blocked}")
+    return "usage: chat on|off · chat matrix on|off · chat block|allow <@tag> · chat status"
+
+
 async def forward_chat_to_matrix(room: str, sender: str, body: str) -> None:
     if not CHAT_MATRIX:
         return
@@ -1084,7 +1181,8 @@ async def forward_chat_to_matrix(room: str, sender: str, body: str) -> None:
 
 CONSOLE_HELP = (
     "P.O.K.E. operator console:\n"
-    "  stats · who · nodes · events · broadcast <m> · kick <n> · chat on|off\n"
+    "  stats · who · nodes · events · broadcast <m> · kick <n>\n"
+    "  chat on|off · chat matrix on|off · chat block|allow <@tag> · chat status\n"
     "  art ascii|media · ext <name> on|off · games · reboot · shutdown · help"
 )
 
@@ -1110,7 +1208,7 @@ async def handle_console(cmd: str) -> None:
     elif verb == "kick":
         cprint(await op_kick(rest) if rest else "usage: kick <name>")
     elif verb == "chat":
-        cprint(set_chat_matrix(rest.lower() in ("on", "1", "true", "yes")))
+        cprint(chat_admin(rest))
     elif verb == "art":
         cprint(art_mode_set(rest))
     elif verb == "ext":
@@ -1223,6 +1321,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             return
         if path in ("/stats", "/health"):
             self._reply(200, stats_json())
+        elif path == "/chat":
+            self._reply(200, chat_status())
         elif path == "/events":
             since = 0
             if "?" in self.path:
@@ -1285,6 +1385,11 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"ok": True, "result": self._run(op_kick(data.get("player", "")))})
         elif path == "/chat":
             self._reply(200, {"ok": True, "result": set_chat_matrix(bool(data.get("enabled")))})
+        elif path == "/gamechat":
+            self._reply(200, {"ok": True, "result": set_game_chat(bool(data.get("enabled")))})
+        elif path == "/chat/restrict":
+            self._reply(200, {"ok": True, "result": chat_restrict(
+                str(data.get("tag", "")), bool(data.get("blocked", True)))})
         elif path == "/reboot":
             self._run(op_shutdown("web-admin reboot", reboot=True), timeout=2)
             self._reply(200, {"ok": True, "result": "rebooting"})
@@ -1377,7 +1482,7 @@ async def admin_command(p: Player, rest: str) -> None:
     elif sub == "kick":
         push(p, c(GREY, (await op_kick(arg)) if arg else "usage: admin kick <name>"))
     elif sub == "chat":
-        push(p, c(GREY, set_chat_matrix(arg.lower() in ("on", "1", "true", "yes"))))
+        push(p, c(GREY, chat_admin(arg)))
     elif sub == "reboot":
         push(p, c(RED, "rebooting the node…")); await op_shutdown("in-MUD operator reboot", reboot=True)
     elif sub == "shutdown":
@@ -1552,8 +1657,9 @@ async def view_piece(p: Player, which: str) -> None:
         piece = GALLERY[int(which.strip()) - 1]
     except (ValueError, IndexError):
         push(p, c(GREY, "view which? try  gallery  for the list")); return
-    lines = [""] + ["  " + l for l in piece.get("art", ["(no ascii rendition)"])]
-    lines += ["", f"  '{piece['title']}' — {piece.get('artist', 'unknown')}"]
+    lines = [""] + center_block(piece.get("art", ["(no ascii rendition)"]))
+    caption = f"'{piece['title']}' — {piece.get('artist', 'unknown')}"
+    lines += ["", " " * max(0, (BOARD_W - 2 - dwidth(caption)) // 2) + caption]
     if piece.get("media") and ART_MODE != "media":
         lines.append("  (full media is off on this node — ascii mode)")
     focus_text(p, piece["title"], lines, AMBER, media=piece.get("media"))
@@ -2084,9 +2190,13 @@ DIRS = {"north", "south", "east", "west", "up", "down"}
 DIR_ALIAS = {"n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down"}
 
 
-async def broadcast_room(room: str, log_line: str, exclude: "Player | None" = None) -> None:
+async def broadcast_room(room: str, log_line: str, exclude: "Player | None" = None,
+                         chat: bool = False) -> None:
+    """Room-wide line. `chat=True` marks player chatter — skipped for frens who muted it."""
     for w, pl in list(PLAYERS.items()):
         if pl.room == room and pl is not exclude:
+            if chat and pl.chat_muted:
+                continue
             push(pl, log_line)
             try:
                 await show(pl)
@@ -2095,7 +2205,10 @@ async def broadcast_room(room: str, log_line: str, exclude: "Player | None" = No
 
 
 async def dispatch(p: Player, line: str) -> bool:
-    verb, _, rest = line.strip().partition(" ")
+    line = line.strip()
+    if line.startswith("/"):                  # '/home', '/fren invite <name>' — slash style works too
+        line = line[1:].strip()
+    verb, _, rest = line.partition(" ")
     verb = verb.lower()
     rest = rest.strip()
     p.idle_since = time.time()
@@ -2132,6 +2245,7 @@ async def dispatch(p: Player, line: str) -> bool:
         return False
     if verb in ("help", "?", "commands"):
         focus_text(p, "How to play", help_lines(p), GREY)
+        push(p, c(GREY, "type naturally, fren — 'sup', 'go down', 'who is the boss' all work"))
     elif verb in ("look", "l"):
         focus_room(p)
     elif verb in ("go", "move", "walk"):
@@ -2192,15 +2306,31 @@ async def dispatch(p: Player, line: str) -> bool:
     elif verb == "say":
         if rest:
             who = f"@{p.fren_tag}" if p.fren_tag else p.name
-            if p.muted:                                   # muted: your says stay local
+            if not GAME_CHAT:                             # node-wide kill switch
+                push(p, c(GREY, "game chat is off on this node — the operator can turn it back on"))
+            elif p.chat_muted:
+                push(p, c(GREY, "you have game chat muted —  chat on  to speak"))
+            elif p.muted or chat_blocked(p):              # operator moderation / @tag restriction
                 push(p, c(GREEN, "you say: ") + c(BOLD, rest) + c(GREY, "  (muted — local only)"))
             else:
                 push(p, c(GREEN, "you say: ") + c(BOLD, rest) + (c(GREY, "  (→ matrix)") if CHAT_MATRIX else ""))
-                await broadcast_room(p.room, c(CYAN, f"{who} says: ") + c(BOLD, rest), exclude=p)
+                await broadcast_room(p.room, c(CYAN, f"{who} says: ") + c(BOLD, rest), exclude=p, chat=True)
                 if CHAT_MATRIX:
                     asyncio.create_task(forward_chat_to_matrix(p.room, who, rest))
         else:
             push(p, c(GREY, "say what?"))
+    elif verb == "chat":
+        want = rest.lower().strip()
+        if want in ("off", "mute", "0"):
+            p.chat_muted = True
+            await asyncio.to_thread(STORE.set_feature, "pref:" + p.name, "chat_off", True)
+            push(p, c(GREY, "game chat muted for you — others' says won't reach you.  chat on  to undo"))
+        elif want in ("on", "unmute", "1"):
+            p.chat_muted = False
+            await asyncio.to_thread(STORE.set_feature, "pref:" + p.name, "chat_off", False)
+            push(p, c(GREEN, "game chat ON for you — welcome back to the floor, fren"))
+        else:
+            push(p, c(GREY, f"your game chat is {'muted' if p.chat_muted else 'on'} —  chat on|off"))
     elif verb in ("certs", "runes", "certificates"):
         await show_certs(p)
     elif verb in ("inventory", "inv", "i"):
@@ -2216,6 +2346,17 @@ async def dispatch(p: Player, line: str) -> bool:
         await invite_fren(p, rest)
     elif verb == "visit":
         await visit_fren(p, rest)
+    elif verb == "fren":
+        sub, _, arg = rest.partition(" ")
+        sub, arg = sub.lower().strip(), arg.strip()
+        if sub == "invite":
+            await invite_fren(p, arg)
+        elif sub == "visit":
+            await visit_fren(p, arg)
+        elif sub in ("add", "link"):
+            await link_identity(p, "fren " + arg)
+        else:
+            push(p, c(GREY, "fren what?  /fren invite <name> · /fren visit <name> · /fren add <name>"))
     elif verb == "gallery":
         await show_gallery(p)
     elif verb == "view":
@@ -2380,6 +2521,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         if p.room not in ROOMS and not is_home(p.room):   # saved in another verse's room
             p.room = VERSE["start_room"]
         p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+        p.chat_muted = bool(await asyncio.to_thread(STORE.get_feature, "pref:" + p.name, "chat_off", False))
         p.session_start_xp, p.session_start_runes = p.xp, len(p.certs)
         hello = f"@{p.fren_tag}" if p.fren_tag else p.name
 
@@ -2395,6 +2537,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 ], AMBER)
             else:
                 focus_room(p)
+            push(p, c(GREY, "psst — you have your own room here:  home   (invite frens over)"))
         else:
             # Welcome back with a summary + a nudge toward next goals (directions computed
             # from where the player actually is, so the hints are never wrong).
@@ -2414,6 +2557,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 "  Good to see you, fren. What would you like to work on next?",
                 ("  " + "; ".join(hints) + " — or just  look  around.") if hints
                 else "  Just  look  around, fren.",
+                "",
+                "  Your own room awaits:  home   (hang your runes · invite frens)",
                 "",
             ], AMBER)
             push(p, c(MAG, VSTR["welcome_back"].format(who=hello)))
@@ -2488,8 +2633,12 @@ async def main() -> None:
         bar,
         row("frens.earth", ("connected — " + FRENS_URL) if frens_aware() else "standalone", "")
         + ("" if frens_aware() else c(GREY, "  (set PA_FRENS_URL to connect)")),
+        row("game chat", "ON" if GAME_CHAT else "OFF", GREEN if GAME_CHAT else RED)
+        + c(GREY, "   (chat on|off · chat block <@tag>)"),
         row("matrix chat", "ON" if CHAT_MATRIX else "off", GREEN if CHAT_MATRIX else GREY)
-        + ("" if CHAT_MATRIX else c(GREY, "  (enable:  chat on)")),
+        + ("" if CHAT_MATRIX else c(GREY, "  (enable:  chat matrix on)")),
+        row("demo mode", "ON — practice runes only" if DEMO_MODE else "off", GOLD if DEMO_MODE else GREY)
+        + ("" if not DEMO_MODE else c(GREY, "  (set PA_DEMO_MODE=off after audit)")),
     ]
     if LOCAL_SITE_URL:
         lines.append(row("arcade site", LOCAL_SITE_URL, CYAN))
