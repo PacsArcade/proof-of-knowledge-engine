@@ -301,6 +301,8 @@
       else if(m.t==='prompt'){ $('node').textContent = m.text||''; }
       else if(m.t==='screen'){ renderScreen(m); }
       else if(m.t==='bye'){ done=true; showEnd(m.lines||['Goodnight, fren.']); }
+      else if(m.t==='kicked'){ done=true; showEnd(m.lines||['GAME OVER','An operator removed you from the floor.']); }
+      else if(m.t==='banned'){ done=true; showEnd(m.lines||['GAME OVER',"You're benched from this arcade, fren."]); }
       else if(m.t==='signout'){ done=true; showEnd([m.text||'Signed out.','You opened POKEMUD on another device.']); }
     };
     ws.onclose=()=>{ $('dot').classList.remove('on'); if(done) return; toast('reconnecting…'); setTimeout(connect,1500); };

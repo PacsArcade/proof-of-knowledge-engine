@@ -282,20 +282,22 @@ button{font-family:var(--pa-font-pixel)}
       <section>
         <div class="rail-label">Social Connections</div>
         <div class="rail-stack">
-          <div class="rail-row">
+          <div class="rail-row" id="soc-matrix-row" style="cursor:pointer" title="Click to edit the Matrix bridge URL">
             <span class="px" style="font-size:9px;color:var(--pa-fg)">MATRIX</span>
-            <span class="mono ell" id="soc-matrix-host" style="font-size:10px;color:var(--pa-fg-dim)">matrix.pacsarcade.org</span>
+            <span class="mono ell" id="soc-matrix-host" style="font-size:10px;color:var(--pa-fg-dim)">&mdash;</span>
             <span class="px" id="soc-matrix-pill" style="font-size:8px;color:var(--pa-fg-dim);margin-left:auto">&mdash;</span>
           </div>
-          <div class="rail-row">
+          <div class="rail-row" id="soc-frens-row" style="cursor:pointer" title="Click to set the frens.earth hub URL">
             <span class="px" style="font-size:9px;color:var(--pa-fg)">FRENS.EARTH</span>
-            <span class="px" style="font-size:8px;color:var(--pa-neon);margin-left:auto">LINKED</span>
+            <span class="mono ell" id="soc-frens-host" style="font-size:10px;color:var(--pa-fg-dim)">&mdash;</span>
+            <span class="px" id="soc-frens-pill" style="font-size:8px;color:var(--pa-fg-dim);margin-left:auto">&mdash;</span>
           </div>
           <div class="rail-row">
             <span class="px" style="font-size:9px;color:var(--pa-fg)">NOSTR RELAYS</span>
             <span class="px" id="soc-nostr-pill" style="font-size:8px;color:var(--pa-fg-dim);margin-left:auto">&mdash;</span>
           </div>
         </div>
+        <div class="explain">Click a row to point this node at YOUR bridge/hub &mdash; nothing is hardwired.</div>
       </section>
 
       <section>
@@ -662,11 +664,20 @@ button{font-family:var(--pa-font-pixel)}
     chip.className = "chip " + (opLinked ? "c-neon" : "c-dim");
     $("op-btn").textContent = opLinked ? "CHANGE OPERATOR ACCOUNT" : "LINK OPERATOR ACCOUNT";
   }
+  let lastMatrixUrl = "", lastFrensUrl = "";
+  function hostOf(u){ try{ return u ? new URL(u).host : ""; }catch(e){ return u; } }
   function renderSocial(stats, relays){
+    lastMatrixUrl = (stats && stats.matrix_bridge) || "";
+    lastFrensUrl  = (stats && stats.frens_url) || "";
     const chatOn = !!(stats && stats.chat_matrix);
+    $("soc-matrix-host").textContent = hostOf(lastMatrixUrl) || "no bridge set — click to add";
     const mp = $("soc-matrix-pill");
-    mp.textContent = chatOn ? "ON" : "OFF";
+    mp.textContent = chatOn ? "ON" : (lastMatrixUrl ? "OFF" : "—");
     mp.style.color = chatOn ? "var(--pa-neon)" : "var(--pa-fg-dim)";
+    $("soc-frens-host").textContent = hostOf(lastFrensUrl) || "standalone — click to join";
+    const fp = $("soc-frens-pill");
+    fp.textContent = lastFrensUrl ? "LINKED" : "STANDALONE";
+    fp.style.color = lastFrensUrl ? "var(--pa-neon)" : "var(--pa-fg-dim)";
     const nRelays = (relays && Array.isArray(relays.relays)) ? relays.relays.filter(r=>r.enabled).length : 0;
     const np = $("soc-nostr-pill");
     np.textContent = nRelays ? (nRelays + " UP") : "OFF";
@@ -791,10 +802,26 @@ button{font-family:var(--pa-font-pixel)}
           <button class="abtn tinybtn cyan" data-act="mute" data-player="${key}" data-on="${muted?0:1}">${muted?"UNMUTE":"MUTE"}</button>
           <button class="abtn tinybtn" data-act="timeout" data-player="${key}">TIMEOUT 5M</button>
           <button class="abtn tinybtn ghost" data-act="kick" data-player="${key}">KICK</button>
+          <button class="abtn tinybtn ghost" data-act="ban" data-player="${key}">BAN</button>
         </span>
       </div>`;
     }).join("");
     $("players-table").innerHTML = head + rows;
+  }
+  function renderBans(stats){
+    const bans = (stats && Array.isArray(stats.bans)) ? stats.bans : [];
+    let strip = $("bans-strip");
+    if(!strip){
+      strip = document.createElement("div");
+      strip.id = "bans-strip";
+      strip.style.cssText = "display:flex;flex-wrap:wrap;gap:5px;align-items:center;padding:8px 12px;border-top:1px solid #1c1c1c";
+      $("players-body").appendChild(strip);
+    }
+    strip.innerHTML = bans.length
+      ? `<span class="px" style="font-size:7px;color:var(--pa-ghost);letter-spacing:.12em">BENCHED:</span> ` +
+        bans.map(b => `<button class="chip c-ghost" data-unban="${esc(b.name)}" style="cursor:pointer;background:none"
+          title="${esc(b.reason||"")} — click to unban">${esc(b.name)} · ${b.left_s===-1?"perm":Math.ceil(b.left_s/60)+"m"} &#10005;</button>`).join("")
+      : `<span class="tk-lbl" style="font-size:7px">NO ACTIVE BANS — GOOD VIBES ON THE FLOOR</span>`;
   }
 
   /* ---------------- training modules ---------------- */
@@ -1018,6 +1045,9 @@ button{font-family:var(--pa-font-pixel)}
     if(type === "timeout") return { color:"var(--pa-coin)", title:"TIMEOUT — 5:00",
       body:"Five minutes on the bench. Your seat and progress are safe; chat re-opens when the counter hits zero.",
       chip:"TIMEOUT 5M", meta:"The chip sits on /u/" + esc(bare) + " until it expires — honest states, nothing hidden." };
+    if(type === "ban") return { color:"var(--pa-ghost)", title:"GAME OVER — BENCHED",
+      body:"You're benched from this arcade, fren. Hydrate. Take a stroll. The high score will wait. 💜",
+      chip:"BENCHED", meta:"Enforced at sign-in until it expires; shows on /u/" + esc(bare) + " via the public profile hook (GET /u/<name>)." };
     return { color:"var(--pa-cyan)", title:"MUTED",
       body:"Your says stay local until an operator unmutes you. The Oracle still answers.",
       chip:"", meta:"Mutes are session-scoped and never appear on the /u/ profile." };
@@ -1070,15 +1100,23 @@ button{font-family:var(--pa-font-pixel)}
     else if(type === "unmute"){ path="/mute"; body={player, on:false}; label="unmute "+player; }
     else if(type === "timeout"){ path="/timeout"; body={player, minutes:5, reason:"operator timeout"}; label="timeout "+player+" 5m"; }
     else if(type === "kick"){ path="/kick"; body={player}; label="kick "+player; }
+    else if(type === "ban"){
+      const mins = prompt("Ban " + player + " for how many minutes? (blank = permanent)");
+      if(mins === null) return;
+      const reason = prompt("Reason (shown to the fren + on their /u/ profile):") || "";
+      path="/ban"; body={player, minutes: mins.trim()? Number(mins): null, reason};
+      label="ban "+player+(mins.trim()?" "+mins.trim()+"m":" permanently");
+    }
     else return;
     const j = await doAction(label, path, body);
     if(j){
-      if(type === "timeout" || type === "kick" || type === "mute"){
+      if(type === "timeout" || type === "kick" || type === "mute" || type === "ban"){
         preview = { type, name: displayName || player };
         renderPreview();
       }
       if(type === "timeout") backroomPost("timed out " + (displayName||player) + " 5m — notes linked. GG's.");
       if(type === "kick") backroomPost("kicked " + (displayName||player) + " off the floor — reason logged.");
+      if(type === "ban") backroomPost("benched " + (displayName||player) + " — reason logged.");
     }
   }
 
@@ -1120,6 +1158,7 @@ button{font-family:var(--pa-font-pixel)}
       renderKnowledge(nodes, relays, torrent);
       renderQA(stats);
       renderPlayers(stats);
+      renderBans(stats);
       renderModules(modules);
       renderExtensions(exts);
       renderGames(games);
@@ -1331,7 +1370,28 @@ button{font-family:var(--pa-font-pixel)}
         modAction("timeout", player, displayName);
       }else if(act === "kick"){
         modAction("kick", player, displayName);
+      }else if(act === "ban"){
+        modAction("ban", player, displayName);
       }
+    });
+
+    // bans strip: click a benched fren to unban
+    document.body.addEventListener("click", e => {
+      const b = e.target.closest("[data-unban]"); if(!b) return;
+      if(confirm(`Unban ${b.dataset.unban}? They can walk back onto the floor.`))
+        doAction("unban " + b.dataset.unban, "/unban", { player: b.dataset.unban });
+    });
+
+    // social connections: click to edit where this node points
+    $("soc-matrix-row").addEventListener("click", () => {
+      const v = prompt("Matrix bridge URL (empty to clear):", lastMatrixUrl);
+      if(v === null) return;
+      doAction("matrix bridge", "/social", { matrix_url: v.trim() });
+    });
+    $("soc-frens-row").addEventListener("click", () => {
+      const v = prompt("frens.earth hub URL (empty = standalone):", lastFrensUrl);
+      if(v === null) return;
+      doAction("frens.earth link", "/social", { frens_url: v.trim() });
     });
 
     // overlay open/close (delegated — buttons are re-rendered)

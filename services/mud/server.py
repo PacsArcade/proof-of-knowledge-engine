@@ -101,6 +101,39 @@ MATRIX_BRIDGE_URL = os.environ.get("PA_MATRIX_BRIDGE_URL", "http://matrix-bridge
 # Game chat (in-room `say` + any bridge): ON by default; operators can kill it globally,
 # restrict specific @tags, and every player can mute it for themselves ('chat off').
 GAME_CHAT = os.environ.get("PA_GAME_CHAT", "on").lower() not in ("0", "off", "false", "no")
+
+
+# --- social connections: editable from the console, persisted across reboots ---
+def _social_file() -> str:
+    return os.environ.get("PA_SOCIAL_FILE", os.path.join(DATA_DIR, "social.json"))
+
+
+def _load_social() -> None:
+    global FRENS_URL, MATRIX_BRIDGE_URL
+    try:
+        with open(_social_file()) as f:
+            d = json.load(f)
+        FRENS_URL = d.get("frens_url", FRENS_URL)
+        MATRIX_BRIDGE_URL = d.get("matrix_url", MATRIX_BRIDGE_URL)
+    except Exception:
+        pass
+
+
+def social_set(frens_url: "str | None" = None, matrix_url: "str | None" = None) -> str:
+    """Point the node at its frens.earth hub / Matrix bridge (empty string clears)."""
+    global FRENS_URL, MATRIX_BRIDGE_URL
+    if frens_url is not None:
+        FRENS_URL = frens_url.strip()
+    if matrix_url is not None:
+        MATRIX_BRIDGE_URL = matrix_url.strip()
+    os.makedirs(os.path.dirname(os.path.abspath(_social_file())), exist_ok=True)
+    with open(_social_file(), "w") as f:
+        json.dump({"frens_url": FRENS_URL, "matrix_url": MATRIX_BRIDGE_URL}, f, indent=2)
+    event("admin", f"social links → frens: {FRENS_URL or 'standalone'} · matrix: {MATRIX_BRIDGE_URL or '—'}")
+    return f"frens.earth: {FRENS_URL or 'standalone'} · matrix bridge: {MATRIX_BRIDGE_URL or '—'}"
+
+
+_load_social()
 # DEMO MODE: on by default until the courses are audited — runes etched are PRACTICE
 # runes, clearly labeled, never presented as real credentials.
 DEMO_MODE = os.environ.get("PA_DEMO_MODE", "on").lower() not in ("0", "off", "false", "no")
@@ -1081,6 +1114,9 @@ def stats_json() -> dict:
             "uptime_s": int(time.time() - p.connected_at),
             "idle_s": int(time.time() - p.idle_since), "admin": p.is_admin,
         } for p in PLAYERS.values()],
+        "bans": bans_list(),
+        "frens_url": FRENS_URL,
+        "matrix_bridge": MATRIX_BRIDGE_URL,
         "runes_etched_session": RUNES_ETCHED,
         "store": {"backend": type(STORE).__name__, "location": getattr(STORE, "path", "postgres DB-2")},
         "oracle": ("local-llm:" + GEN_MODEL) if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted",
@@ -1128,12 +1164,13 @@ async def op_broadcast(msg: str) -> str:
 async def op_kick(name: str) -> str:
     for w, pl in list(PLAYERS.items()):
         if pl.name.lower() == name.lower() or (pl.fren_tag or "").lower() == name.lstrip("@").lower():
-            try:
-                await pl.send(c(RED, "\r\nAn operator disconnected you. Your progress is saved. 💜\r\n"))
-                w.close()
-            except Exception:
-                pass
-            PLAYERS.pop(w, None)
+            # Same branded message on web and terminal (the web client shows it on its
+            # end screen instead of silently auto-reconnecting).
+            await send_gameover(pl, "kicked", [
+                "GAME OVER",
+                "An operator removed you from the floor. Your progress is saved.",
+                "You can reconnect — repeat trouble means a longer bench. 💜",
+            ])
             event("admin", f"kicked {pl.name}")
             return f"kicked {pl.name}"
     return f"no player matching '{name}'"
@@ -1241,9 +1278,11 @@ async def forward_chat_to_matrix(room: str, sender: str, body: str) -> None:
 
 CONSOLE_HELP = (
     "P.O.K.E. operator console:\n"
-    "  stats · who · nodes · events · broadcast <m> · kick <n>\n"
+    "  stats · who · nodes · events · broadcast <m>\n"
+    "  kick <n> · ban <n> [min] [reason] · unban <n> · bans · timeout via web console\n"
     "  chat on|off · chat matrix on|off · chat block|allow <@tag> · chat status\n"
-    "  art ascii|media · ext <name> on|off · games · reboot · shutdown · help"
+    "  social frens|matrix <url> · art ascii|media · ext <name> on|off · games\n"
+    "  reboot · shutdown · help"
 )
 
 
@@ -1267,6 +1306,30 @@ async def handle_console(cmd: str) -> None:
         cprint(await op_broadcast(rest) if rest else "usage: broadcast <message>")
     elif verb == "kick":
         cprint(await op_kick(rest) if rest else "usage: kick <name>")
+    elif verb == "ban":
+        name, _, tail = rest.partition(" ")
+        mins, _, reason = tail.partition(" ")
+        cprint(await op_ban(name, int(mins) if mins.isdigit() else None,
+                            (reason if mins.isdigit() else tail).strip())
+               if name else "usage: ban <name> [minutes] [reason]   (no minutes = permanent)")
+    elif verb == "unban":
+        cprint(await op_unban(rest) if rest else "usage: unban <name>")
+    elif verb == "bans":
+        bl = bans_list()
+        cprint("\n".join(f"  {b['name']:<18} "
+                         + ("permanent" if b['left_s'] == -1 else f"{b['left_s'] // 60}m left")
+                         + (f"  ({b['reason']})" if b['reason'] else "") for b in bl)
+               if bl else "no active bans — good vibes on the floor")
+    elif verb == "social":
+        kind, _, url = rest.partition(" ")
+        kind = kind.lower().strip()
+        if kind in ("frens", "frens.earth"):
+            cprint(social_set(frens_url=url.strip()))
+        elif kind == "matrix":
+            cprint(social_set(matrix_url=url.strip()))
+        else:
+            cprint(f"frens.earth: {FRENS_URL or 'standalone'} · matrix bridge: {MATRIX_BRIDGE_URL or '—'}\n"
+                   "usage: social frens <url> · social matrix <url>   (empty url clears)")
     elif verb == "chat":
         cprint(chat_admin(rest))
     elif verb == "art":
@@ -1375,6 +1438,26 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         if path == "/config":                          # public: how the browser client reaches the game
             return self._reply(200, {"ws_port": MUD_WS_PORT, "local_site": LOCAL_SITE_URL,
                                      "node": os.environ.get("PA_NODE_NAME", "a POKE node")})
+        if path.startswith("/u/"):                     # public: a fren's profile + moderation state
+            import urllib.parse                        # (the website's /u/<name> page pulls this)
+            name = urllib.parse.unquote(path[3:]).strip()
+            a = STORE.public_attributes(name) if name else None
+            if not a:
+                return self._reply(404, {"error": "no fren by that name"})
+            b = ban_info(a["name"])
+            return self._reply(200, {
+                "name": a["name"], "fren": a["fren_tag"], "level": a["level"], "xp": a["xp"],
+                "runes": a["runes"], "verse": VERSE["id"], "world": WORLD,
+                "online": any(pl.name == a["name"] for pl in PLAYERS.values()),
+                "demo_mode": DEMO_MODE,
+                "moderation": {
+                    "banned": bool(b),
+                    "ban_reason": (b or {}).get("reason", ""),
+                    "ban_left_s": (-1 if (b and b.get("until", -1) == -1)
+                                   else (max(0, int(b["until"] - time.time())) if b else 0)),
+                    "timeout_s": timeout_left(a["name"]),
+                },
+            })
         if not self._authed():
             return self._reply(401, {"error": "unauthorized"})
         if self._bot_blocked():
@@ -1397,6 +1480,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"games": _load_games()})
         elif path == "/extensions":
             self._reply(200, {"extensions": _load_extensions()})
+        elif path == "/bans":
+            self._reply(200, {"bans": bans_list()})
         elif path == "/nodes":
             self._reply(200, self._run(get_swarm_status(True)))
         elif path == "/system":
@@ -1488,6 +1573,16 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         elif path == "/timeout":
             self._reply(200, {"ok": True, "result": self._run(op_timeout(
                 str(data.get("player", "")), int(data.get("minutes", 5) or 5), str(data.get("reason", ""))))})
+        elif path == "/ban":
+            mins = data.get("minutes")
+            self._reply(200, {"ok": True, "result": self._run(op_ban(
+                str(data.get("player", "")), int(mins) if mins else None, str(data.get("reason", ""))))})
+        elif path == "/unban":
+            self._reply(200, {"ok": True, "result": self._run(op_unban(str(data.get("player", ""))))})
+        elif path == "/social":
+            self._reply(200, {"ok": True, "result": social_set(
+                data.get("frens_url") if "frens_url" in data else None,
+                data.get("matrix_url") if "matrix_url" in data else None)})
         elif path == "/watch":
             self._reply(200, {"ok": True, "result": self._run(op_watch(
                 str(data.get("player", "")), bool(data.get("on", True))))})
@@ -1500,11 +1595,19 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         elif path == "/sitelink":
             if "mode" in data:
                 _SITELINK["mode"] = "testing" if data.get("mode") == "testing" else "synced"
+                # The toggle should DO something visible: testing points the node link at
+                # this local instance; synced points it back at the production site.
+                if not data.get("url"):
+                    _SITELINK["url"] = (f"http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/"
+                                        if _SITELINK["mode"] == "testing" else _SITELINK["prod_url"])
+                event("admin", f"node link → {_SITELINK['mode']} ({_SITELINK['url']})")
             if data.get("url"):
                 _SITELINK["url"] = str(data.get("url"))
+                if _SITELINK["mode"] == "synced":
+                    _SITELINK["prod_url"] = _SITELINK["url"]
             if data.get("site"):
                 _SITELINK["site"] = str(data.get("site"))
-            self._reply(200, {"ok": True, "result": _SITELINK["mode"]})
+            self._reply(200, {"ok": True, "result": _SITELINK["mode"] + " — " + _SITELINK["url"]})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -2211,17 +2314,21 @@ async def op_mute(name: str, on: bool, reason: str = "") -> str:
 
 async def op_timeout(name: str, minutes: int, reason: str = "") -> str:
     w, pl = _find_player(name)
-    if not pl:
-        return f"no player '{name}'"
-    pl.timeout_until = time.time() + max(1, int(minutes)) * 60
-    push(pl, c(GOLD, f"TIMEOUT — {int(minutes)}:00. Your seat and progress are safe; chat re-opens at zero.")
-         + (c(GREY, f"  ({reason})") if reason else ""))
-    try:
-        await show(pl)
-    except Exception:
-        pass
-    event("admin", f"{pl.name} timed out {int(minutes)}m")
-    return f"{pl.name} timed out {int(minutes)}m"
+    target = (pl.name if pl else name).strip()
+    if not target:
+        return "usage: timeout <name> [minutes]"
+    until = time.time() + max(1, int(minutes)) * 60
+    _persist_timeout(target, until)                   # survives a rage-quit + rejoin
+    if pl:
+        pl.timeout_until = until
+        push(pl, c(GOLD, f"TIMEOUT — {int(minutes)}:00. Your seat and progress are safe; chat re-opens at zero.")
+             + (c(GREY, f"  ({reason})") if reason else ""))
+        try:
+            await show(pl)
+        except Exception:
+            pass
+    event("admin", f"{target} timed out {int(minutes)}m")
+    return f"{target} timed out {int(minutes)}m"
 
 
 async def op_watch(name: str, on: bool) -> str:
@@ -2230,6 +2337,115 @@ async def op_watch(name: str, on: bool) -> str:
         return f"no player '{name}'"
     pl.watched = bool(on)
     return f"{'watching' if on else 'unwatched'} {pl.name}"
+
+
+# --- persistent moderation: bans + timeouts survive reconnects and reboots ----
+MOD_FILE = os.environ.get("PA_MODERATION_FILE", os.path.join(DATA_DIR, "moderation.json"))
+
+
+def _load_mod() -> dict:
+    try:
+        with open(MOD_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"bans": {}, "timeouts": {}}
+
+
+def _save_mod(d: dict) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(MOD_FILE)), exist_ok=True)
+    with open(MOD_FILE, "w") as f:
+        json.dump(d, f, indent=2)
+
+
+def ban_info(name: str) -> "dict | None":
+    """Active ban for a name (case-insensitive), or None. Expired bans self-clean."""
+    d = _load_mod()
+    b = d.get("bans", {}).get(name.strip().lower())
+    if not b:
+        return None
+    if b.get("until", -1) != -1 and time.time() > b["until"]:
+        d["bans"].pop(name.strip().lower(), None)
+        _save_mod(d)
+        return None
+    return b
+
+
+def timeout_left(name: str) -> int:
+    d = _load_mod()
+    until = d.get("timeouts", {}).get(name.strip().lower(), 0)
+    return max(0, int(until - time.time()))
+
+
+def _persist_timeout(name: str, until: float) -> None:
+    d = _load_mod()
+    d.setdefault("timeouts", {})[name.strip().lower()] = until
+    _save_mod(d)
+
+
+def _fmt_left(until: float) -> str:
+    if until == -1:
+        return "this bench has no timer — talk to the operator"
+    return "the floor reopens in " + _fmt_dur(max(0, until - time.time()))
+
+
+def ban_lines(b: dict) -> list[str]:
+    lines = ["GAME OVER — you're benched from this arcade, fren."]
+    if b.get("reason"):
+        lines.append(f"Reason: {b['reason']}")
+    lines += [_fmt_left(b.get("until", -1)).capitalize() + ".",
+              "Hydrate. Take a stroll. The high score will wait. 💜"]
+    return lines
+
+
+async def send_gameover(pl: "Player", kind: str, lines: list[str]) -> None:
+    """Branded removal message — same words on web and terminal — then the door."""
+    try:
+        if pl.web:
+            await pl.send(json.dumps({"t": kind, "lines": lines}))
+        else:
+            await pl.send(CLEAR + c(RED, "\r\n  " + "\r\n  ".join(lines) + "\r\n"))
+        pl.writer.close()
+    except Exception:
+        pass
+    PLAYERS.pop(pl.writer, None)
+
+
+async def op_ban(name: str, minutes: "int | None" = None, reason: str = "") -> str:
+    w, pl = _find_player(name)
+    target = (pl.name if pl else name).strip()
+    if not target:
+        return "usage: ban <name> [minutes] [reason]"
+    until = -1 if not minutes else time.time() + max(1, int(minutes)) * 60
+    d = _load_mod()
+    d.setdefault("bans", {})[target.lower()] = {"until": until, "reason": reason,
+                                                "at": time.time(), "by": "operator"}
+    _save_mod(d)
+    span = "permanently" if until == -1 else f"for {int(minutes)}m"
+    event("admin", f"banned {target} {span}" + (f" ({reason})" if reason else ""))
+    if pl:
+        await send_gameover(pl, "banned", ban_lines(d["bans"][target.lower()]))
+    return f"banned {target} {span}"
+
+
+async def op_unban(name: str) -> str:
+    d = _load_mod()
+    if d.get("bans", {}).pop(name.strip().lower(), None) is None:
+        return f"no ban on '{name}'"
+    _save_mod(d)
+    event("admin", f"unbanned {name}")
+    return f"unbanned {name} — welcome them back, fren"
+
+
+def bans_list() -> list[dict]:
+    d = _load_mod()
+    out = []
+    for n, b in d.get("bans", {}).items():
+        if b.get("until", -1) != -1 and time.time() > b["until"]:
+            continue
+        out.append({"name": n, "until": b.get("until", -1), "reason": b.get("reason", ""),
+                    "left_s": (-1 if b.get("until", -1) == -1
+                               else max(0, int(b["until"] - time.time())))})
+    return out
 
 
 # Course modules + knowledge QA are the Architect's/Warden's — stubbed until wired (see ROADMAP).
@@ -2242,6 +2458,7 @@ _MODULES = [
 ]
 _SITELINK = {"mode": "testing" if LOCAL_SITE_URL else "synced",
              "url": LOCAL_SITE_URL or "https://pacsarcade.org",
+             "prod_url": "https://pacsarcade.org",
              "site": os.environ.get("PA_ORG_SITE", "pacsarcade.org")}
 
 
@@ -2598,6 +2815,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             break
         else:
             p.name = "a wandering fren"
+
+        # --- moderation gate: banned frens don't get past the door ---
+        ban = await asyncio.to_thread(ban_info, p.name)
+        if ban:
+            event("warn", f"{p.name} tried to join while banned")
+            await send_gameover(p, "banned", ban_lines(ban))
+            return
+        left = await asyncio.to_thread(timeout_left, p.name)
+        if left > 0:                                  # a timeout follows you back in
+            p.timeout_until = time.time() + left
+            push(p, c(GOLD, f"still benched — {left}s left. seat + progress safe, fren."))
 
         # --- one live session per player: take over any existing one (fixes multi-device divergence) ---
         for w2, other in list(PLAYERS.items()):
