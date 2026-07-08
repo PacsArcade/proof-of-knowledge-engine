@@ -331,6 +331,29 @@ button{font-family:var(--pa-font-pixel)}
         <div class="explain">Every source is free. Trust is the only gate &mdash; manifests are signature-checked before anything enters the node.</div>
       </section>
 
+      <section>
+        <div class="rail-label">Extensions</div>
+        <div class="rail-stack" id="ext-list">
+          <div class="rail-row"><span class="dim mono" style="font-size:11px">loading&hellip;</span></div>
+        </div>
+        <div class="explain">Owner-toggled add-ons. The <strong style="color:rgba(255,255,255,.85)">pacBOT ops bot</strong> may read stats/events and act on your behalf &mdash; off by default, your call always.</div>
+      </section>
+
+      <section>
+        <div class="rail-label">Linked Games</div>
+        <div class="rail-stack" id="games-list">
+          <div class="rail-row"><span class="dim mono" style="font-size:11px">loading&hellip;</span></div>
+        </div>
+        <div id="game-form" class="hidden" style="margin-top:8px;border:2px solid var(--pa-edge);background:var(--pa-panel);padding:10px;display:flex;flex-direction:column;gap:6px">
+          <input class="inp" id="game-name" placeholder="game name (e.g. LUANTI)" autocomplete="off" spellcheck="false">
+          <input class="inp" id="game-kind" placeholder="kind (voxel / mud / web)" autocomplete="off" spellcheck="false">
+          <input class="inp" id="game-url" placeholder="url players connect to" autocomplete="off" spellcheck="false">
+          <button class="abtn cyan wide" id="game-add" style="min-height:36px">CONFIRM LINK</button>
+        </div>
+        <button class="abtn cyan wide" id="add-game-btn" style="min-height:36px;margin-top:8px">+ LINK A GAME</button>
+        <div class="explain">Front-ends into this pokenode &mdash; POKEMUD is built in; the Luanti voxel verse docks here when it lands.</div>
+      </section>
+
       <div class="grow"></div>
     </aside>
 
@@ -365,6 +388,21 @@ button{font-family:var(--pa-font-pixel)}
         </div>
         <div id="players-body">
           <div class="tscroll" id="players-table"><div class="body dim" style="padding:12px">loading&hellip;</div></div>
+        </div>
+      </section>
+
+      <!-- LIVE CONSOLE -->
+      <section class="frame">
+        <div class="frame-head ruled">
+          <button class="sec-toggle" data-target="console-body"><span class="sec-tw">&#9662;</span><span class="sec-title" style="color:var(--pa-coin)">LIVE CONSOLE</span></button>
+          <span class="px" id="console-count" style="font-size:8px;color:var(--pa-fg-dim)">&mdash;</span>
+          <div class="grow"></div>
+          <span class="tk-lbl">REFRESH 2S</span>
+        </div>
+        <div id="console-body">
+          <div id="console-feed" style="background:var(--pa-void);font-family:var(--pa-font-mono);font-size:11.5px;line-height:1.65;padding:10px 12px;max-height:230px;overflow-y:auto;display:flex;flex-direction:column;gap:2px">
+            <span class="dim">waiting for events&hellip;</span>
+          </div>
         </div>
       </section>
 
@@ -494,6 +532,7 @@ button{font-family:var(--pa-font-pixel)}
   /* ---------------- auth / gate ---------------- */
   function showGate(note){
     if(timer){ clearInterval(timer); timer = null; }
+    if(evTimer){ clearInterval(evTimer); evTimer = null; }
     token = null;
     $("gate-note").textContent = note || "";
     $("gate").classList.add("show");
@@ -780,6 +819,74 @@ button{font-family:var(--pa-font-pixel)}
     $("modules-table").innerHTML = head + rows;
   }
 
+  /* ---------------- live console (events feed) ---------------- */
+  let evNext = 0, evTimer = null;
+  const evLines = [];
+  const EV_COLOR = { join:"var(--pa-neon)", part:"var(--pa-fg-dim)", etch:"var(--pa-coin)",
+                     levelup:"var(--pa-coin)", admin:"var(--pa-cyan)", warn:"var(--pa-ghost)" };
+  function renderConsole(){
+    const feed = $("console-feed");
+    if(!evLines.length){
+      feed.innerHTML = `<span class="dim">no events yet &mdash; joins, rune etches and operator actions land here.</span>`;
+      return;
+    }
+    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 24;
+    feed.innerHTML = evLines.map(e =>
+      `<div><span style="color:var(--pa-fg-dim)">${esc(e.at)}</span> <span style="color:${EV_COLOR[e.kind]||"var(--pa-fg-dim)"}">${esc(String(e.kind).padStart(7," "))}</span> <span style="color:#2a2a2a">&#9474;</span> <span style="color:rgba(255,255,255,.78)">${esc(e.msg)}</span></div>`
+    ).join("");
+    if(atBottom) feed.scrollTop = feed.scrollHeight;
+    $("console-count").textContent = evLines.length + " EVENTS";
+  }
+  async function pollEvents(){
+    if(!token) return;
+    try{
+      const j = await apiGet("/events?since=" + evNext);
+      if(j && Array.isArray(j.events) && j.events.length){
+        evLines.push(...j.events);
+        while(evLines.length > 200) evLines.shift();
+        renderConsole();
+      }
+      if(j && typeof j.next === "number") evNext = j.next;
+    }catch(e){ if(e instanceof AuthError) on401(); }
+  }
+
+  /* ---------------- extensions ---------------- */
+  function renderExtensions(data){
+    const ext = (data && data.extensions) ? data.extensions : null;
+    const box = $("ext-list");
+    if(!ext){ return; }
+    const names = Object.keys(ext);
+    if(!names.length){ box.innerHTML = `<div class="rail-row"><span class="dim mono" style="font-size:11px">no extensions</span></div>`; return; }
+    box.innerHTML = names.map(n => {
+      const on = !!ext[n].enabled;
+      return `<div class="rail-row" title="${esc(ext[n].desc||"")}">
+        <span class="px" style="font-size:9px;color:var(--pa-fg)">${esc(n.toUpperCase())}</span>
+        <span class="mono ell dim" style="font-size:10px;flex:1">${esc(ext[n].desc||"")}</span>
+        <button class="abtn tinybtn" data-ext-toggle="${esc(n)}" data-enabled="${on?1:0}"
+          style="color:${on?"var(--pa-neon)":"var(--pa-fg-dim)"};border-color:${on?"var(--pa-neon)":"var(--pa-edge)"}">${on?"ON":"OFF"}</button>
+      </div>`;
+    }).join("");
+  }
+
+  /* ---------------- linked games ---------------- */
+  function renderGames(data){
+    const games = (data && Array.isArray(data.games)) ? data.games : null;
+    const box = $("games-list");
+    if(!games) return;
+    box.innerHTML = games.map(g => {
+      const on = !!g.enabled, builtin = !!g.builtin;
+      const pill = builtin ? `<span class="px" style="font-size:8px;color:var(--pa-neon)">LIVE</span>`
+        : `<button class="abtn tinybtn" data-game-toggle="${esc(g.name)}" data-enabled="${on?1:0}"
+             style="color:${on?"var(--pa-neon)":"var(--pa-fg-dim)"};border-color:${on?"var(--pa-neon)":"var(--pa-edge)"}">${on?"ON":"OFF"}</button>`;
+      const rm = builtin ? "" : `<button class="abtn tinybtn ghost" data-game-remove="${esc(g.name)}" title="unlink game">&#10005;</button>`;
+      return `<div class="rail-row">
+        <span class="px" style="font-size:9px;color:var(--pa-fg)">${esc(String(g.name||"?").toUpperCase())}</span>
+        <span class="mono ell dim" style="font-size:10px;flex:1" title="${esc(g.url||"")}">${esc(g.kind||"game")}${g.url?(" &middot; "+esc(g.url)):""}</span>
+        ${pill}${rm}
+      </div>`;
+    }).join("");
+  }
+
   /* ---------------- controls: matrix chat toggle ---------------- */
   function renderChatToggle(stats){
     lastChatMatrix = !!(stats && stats.chat_matrix);
@@ -960,7 +1067,7 @@ button{font-family:var(--pa-font-pixel)}
     if(inFlight) return;
     inFlight = true;
     try{
-      const [stats, hist, nodes, relays, torrent, sitelink, modules, block] = await Promise.all([
+      const [stats, hist, nodes, relays, torrent, sitelink, modules, block, exts, games] = await Promise.all([
         apiGet("/stats"),
         softGet("/system/history?window=60"),
         softGet("/nodes"),
@@ -969,6 +1076,8 @@ button{font-family:var(--pa-font-pixel)}
         softGet("/sitelink"),
         softGet("/modules"),
         softGet("/block"),
+        softGet("/extensions"),
+        softGet("/games"),
       ]);
 
       // fetch chat history for watched players (small set)
@@ -991,6 +1100,8 @@ button{font-family:var(--pa-font-pixel)}
       renderQA(stats);
       renderPlayers(stats);
       renderModules(modules);
+      renderExtensions(exts);
+      renderGames(games);
       renderChatToggle(stats);
       renderWatch(stats);
       renderBackroom();
@@ -1005,8 +1116,11 @@ button{font-family:var(--pa-font-pixel)}
   function start(){
     setLive(true);
     refresh();
+    pollEvents();
     if(timer) clearInterval(timer);
     timer = setInterval(refresh, 5000);
+    if(evTimer) clearInterval(evTimer);
+    evTimer = setInterval(pollEvents, 2000);
   }
 
   /* ---------------- collapse toggles ---------------- */
@@ -1128,6 +1242,39 @@ button{font-family:var(--pa-font-pixel)}
         if(confirm(`Remove trusted source "${b.dataset.relayRemove}"?`))
           doAction("remove " + b.dataset.relayRemove, "/relays/remove", { name:b.dataset.relayRemove });
       }
+    });
+
+    // linked games
+    $("add-game-btn").addEventListener("click", () => {
+      const p = $("game-form");
+      const showing = p.classList.toggle("hidden") === false;
+      $("add-game-btn").textContent = showing ? "− HIDE GAME FORM" : "+ LINK A GAME";
+      if(showing) $("game-name").focus();
+    });
+    $("game-add").addEventListener("click", () => {
+      const name = $("game-name").value.trim(), kind = $("game-kind").value.trim(), url = $("game-url").value.trim();
+      if(!name){ log("link game", "name required", true); return; }
+      doAction("link game " + name, "/games", { name, kind, url });
+      $("game-name").value = ""; $("game-kind").value = ""; $("game-url").value = "";
+    });
+    $("games-list").addEventListener("click", e => {
+      const b = e.target.closest("button"); if(!b) return;
+      if(b.dataset.gameToggle != null){
+        const enabled = b.dataset.enabled !== "1";
+        doAction((enabled?"enable ":"disable ") + b.dataset.gameToggle, "/games/toggle", { name:b.dataset.gameToggle, enabled });
+      }else if(b.dataset.gameRemove != null){
+        if(confirm(`Unlink game "${b.dataset.gameRemove}"?`))
+          doAction("unlink " + b.dataset.gameRemove, "/games/remove", { name:b.dataset.gameRemove });
+      }
+    });
+
+    // extensions
+    $("ext-list").addEventListener("click", e => {
+      const b = e.target.closest("[data-ext-toggle]"); if(!b) return;
+      const enabled = b.dataset.enabled !== "1";
+      const name = b.dataset.extToggle;
+      if(enabled && !confirm(`Enable the ${name.toUpperCase()} extension? It may read node stats/events and act on your behalf.`)) return;
+      doAction("extension " + name + " " + (enabled?"on":"off"), "/extensions", { name, enabled });
     });
 
     // delegated moderation actions (players table, watch rail, review modal)

@@ -32,8 +32,9 @@
   #dot{width:.6rem;height:.6rem;border-radius:50%;background:#445;box-shadow:0 0 6px #000}
   #dot.on{background:var(--green);box-shadow:0 0 9px var(--green)}
 
-  /* ---- login ---- */
-  #login{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.4rem}
+  /* ---- login (attract mode) ---- */
+  #login{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.4rem;position:relative}
+  #stars{position:absolute;inset:0;z-index:-1;width:100%;height:100%}
   #login .marquee{color:var(--dim);letter-spacing:.3em;font-size:.8rem}
   #login h1{margin:.2rem 0;font-size:clamp(1.6rem,7vw,3rem);letter-spacing:.18em;
     background:linear-gradient(90deg,var(--gold),var(--cyan),var(--magenta),var(--gold));
@@ -41,8 +42,25 @@
     animation:glim 4s linear infinite;text-shadow:0 0 30px #ff35c840}
   @keyframes glim{to{background-position:300% 0}}
   #login .tag{color:var(--amber)} #login .node{color:var(--dim);font-size:.85rem}
-  #login .oracle{color:var(--grey);max-width:34rem;font-size:.9rem;line-height:1.5;margin:.6rem 0}
+  #login .oracle{color:var(--grey);max-width:34rem;font-size:.9rem;line-height:1.5;margin:.6rem 0;min-height:4.2em}
+  #login .oracle .caret{display:inline-block;width:.55em;background:var(--grey);animation:caret .8s steps(1) infinite;height:1em;vertical-align:-.15em}
+  @keyframes caret{50%{opacity:0}}
+  .coinline{color:var(--gold);font-weight:bold;letter-spacing:.15em;animation:coinblink 1.1s steps(1) infinite;text-shadow:0 0 14px var(--gold)}
+  @keyframes coinblink{50%{opacity:.2}}
   #login.hidden{display:none}
+
+  /* ---- CRT power-on ---- */
+  #crt{position:fixed;inset:0;z-index:96;pointer-events:none;background:#000;opacity:1;animation:crtfade .45s ease-out .8s forwards}
+  #crt::after{content:"";position:absolute;left:0;right:0;top:50%;height:100%;
+    background:linear-gradient(#fff,#cfe9ff);opacity:0;filter:blur(.5px);
+    transform:translateY(-50%) scaleY(.004);animation:crtline .8s cubic-bezier(.25,.8,.35,1) forwards}
+  @keyframes crtline{0%{opacity:1;transform:translateY(-50%) scaleY(.004)}
+    35%{opacity:1;transform:translateY(-50%) scaleY(.012)}
+    100%{opacity:1;transform:translateY(-50%) scaleY(1)}}
+  @keyframes crtfade{to{opacity:0;visibility:hidden}}
+
+  /* ---- level-up burst ---- */
+  #burst{position:fixed;inset:0;z-index:70;pointer-events:none}
 
   /* ---- game ---- */
   #game{flex:1;display:none;flex-direction:column;gap:.5rem}
@@ -90,18 +108,20 @@
 <div id="app">
   <div class="top">
     <span class="brand">◆ POKEMUD</span><span class="sub">Proof of Knowledge Engine</span>
-    <span class="spacer"></span><span id="site"></span><span id="dot" title="connection"></span>
+    <span class="spacer"></span><span id="site"></span>
+    <button id="mute" title="sound on/off" style="background:none;border:0;cursor:pointer;font-size:1rem;line-height:1">🔇</button>
+    <span id="dot" title="connection"></span>
   </div>
 
   <section id="login">
+    <canvas id="stars"></canvas>
     <div class="marquee">PAC'S ARCADE</div>
     <div class="marquee" style="margin-top:-.2rem">presents</div>
     <h1>P O K E M U D</h1>
     <div class="tag">Proof of Knowledge Engine</div>
     <div class="node" id="node"></div>
-    <div class="oracle">"I don't hand out answers — I trade in questions. Show me you truly understand a
-      thing, and I'll etch it into a rune only you can carry. Insert a token, fren."</div>
-    <div class="node">↓ name yourself below to begin ↓</div>
+    <div class="oracle" id="oracle-quote" aria-label="I don't hand out answers — I trade in questions. Show me you truly understand a thing, and I'll etch it into a rune only you can carry. Insert a token, fren."></div>
+    <div class="coinline">▶ INSERT COIN — name yourself below ◀</div>
   </section>
 
   <section id="game">
@@ -123,6 +143,8 @@
   </footer>
 </div>
 <div id="toast"></div>
+<div id="crt"></div>
+<canvas id="burst"></canvas>
 <script>
 (() => {
   const $ = id => document.getElementById(id);
@@ -131,14 +153,95 @@
   const ARROW = {north:'▲ north',south:'▼ south',east:'► east',west:'◄ west',up:'△ up',down:'▽ down'};
   let ws=null, named=false, done=false, endSite='';
 
+  /* ---- retro sound (WebAudio, no assets; silent until the fren opts in) ---- */
+  let AC=null, muted = localStorage.getItem('poke_mute')!=='0';   // default: muted
+  function ac(){ if(!AC){ try{ AC=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+    if(AC && AC.state==='suspended') AC.resume().catch(()=>{});
+    return AC; }
+  function blip(freq,dur,type,vol,slide){
+    if(muted) return; const a=ac(); if(!a) return;
+    const o=a.createOscillator(), g=a.createGain();
+    o.type=type||'square'; o.frequency.value=freq;
+    if(slide) o.frequency.exponentialRampToValueAtTime(Math.max(40,freq+slide), a.currentTime+dur);
+    g.gain.setValueAtTime(vol||.04, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(.0001, a.currentTime+dur);
+    o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime+dur+.02);
+  }
+  const seq = (notes,step,dur,type,vol) => notes.forEach((f,i)=>setTimeout(()=>blip(f,dur,type,vol),i*step));
+  const sfx = {
+    send:   ()=>blip(660,.05,'square',.025),
+    coin:   ()=>{blip(988,.09,'square',.05); setTimeout(()=>blip(1319,.2,'square',.05),85);},
+    etch:   ()=>seq([523,659,784,1047],90,.12,'triangle',.05),
+    victory:()=>seq([392,523,659,784],80,.1,'square',.045),
+    levelup:()=>seq([523,659,784,1047,1319],70,.09,'square',.05),
+  };
+  function renderMute(){ $('mute').textContent = muted ? '🔇' : '🔊'; }
+  $('mute').onclick = () => { muted=!muted; localStorage.setItem('poke_mute', muted?'1':'0'); renderMute(); if(!muted) sfx.coin(); };
+  renderMute();
+
+  /* ---- starfield behind the attract screen ---- */
+  (function stars(){
+    const cv=$('stars'), cx=cv.getContext('2d');
+    const COLORS=['#39e6ff','#ff35c8','#ffd24a','#9aa6bd'];
+    let pts=[], raf=null;
+    function size(){ cv.width=cv.offsetWidth; cv.height=cv.offsetHeight;
+      pts=Array.from({length:70},()=>({x:Math.random()*cv.width,y:Math.random()*cv.height,
+        r:Math.random()*1.6+.4,v:Math.random()*.25+.06,c:COLORS[Math.random()*COLORS.length|0],p:Math.random()*6.28})); }
+    function tick(t){
+      if($('login').classList.contains('hidden')){ raf=null; return; }
+      cx.clearRect(0,0,cv.width,cv.height);
+      for(const s of pts){
+        s.y-=s.v; if(s.y<-2){ s.y=cv.height+2; s.x=Math.random()*cv.width; }
+        cx.globalAlpha=.35+.65*Math.abs(Math.sin(t/900+s.p));
+        cx.fillStyle=s.c; cx.fillRect(s.x,s.y,s.r,s.r);
+      }
+      cx.globalAlpha=1; raf=requestAnimationFrame(tick);
+    }
+    size(); window.addEventListener('resize',size); raf=requestAnimationFrame(tick);
+  })();
+
+  /* ---- typewriter for the Oracle's pitch ---- */
+  (function typewriter(){
+    const el=$('oracle-quote'), txt=el.getAttribute('aria-label');
+    const caret=document.createElement('span'); caret.className='caret';
+    let i=0;
+    setTimeout(function type(){
+      el.textContent=txt.slice(0,i); el.appendChild(caret);
+      if(i++ <= txt.length && !$('login').classList.contains('hidden')) setTimeout(type, 16);
+      else caret.remove();
+    }, 950);            // starts as the CRT finishes warming up
+  })();
+
+  /* ---- level-up particle burst ---- */
+  function burst(){
+    const cv=$('burst'), cx=cv.getContext('2d');
+    cv.width=innerWidth; cv.height=innerHeight;
+    const P=Array.from({length:70},()=>{
+      const a=Math.random()*6.28, sp=Math.random()*6+2;
+      return {x:cv.width/2,y:cv.height*.35,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-2,
+        c:['#ffd24a','#39e6ff','#ff35c8','#39ff9e'][Math.random()*4|0],l:1};
+    });
+    const t0=performance.now();
+    (function tick(t){
+      const dt=(t-t0)/900;
+      cx.clearRect(0,0,cv.width,cv.height);
+      if(dt>=1) return;
+      for(const p of P){
+        p.x+=p.vx; p.y+=p.vy; p.vy+=.18;
+        cx.globalAlpha=1-dt; cx.fillStyle=p.c; cx.fillRect(p.x,p.y,3,3);
+      }
+      cx.globalAlpha=1; requestAnimationFrame(tick);
+    })(t0+1);
+  }
+
   function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
   function fx(list){ if(!list||!list.length) return; const panel=$('panel');
-    if(list.includes('etch')){ panel.classList.remove('fx-etch'); void panel.offsetWidth; panel.classList.add('fx-etch'); }
-    if(list.includes('victory')){ panel.classList.remove('fx-victory'); void panel.offsetWidth; panel.classList.add('fx-victory'); }
-    if(list.includes('levelup')) toast('★ LEVEL UP ★');
+    if(list.includes('etch')){ panel.classList.remove('fx-etch'); void panel.offsetWidth; panel.classList.add('fx-etch'); sfx.etch(); }
+    if(list.includes('victory')){ panel.classList.remove('fx-victory'); void panel.offsetWidth; panel.classList.add('fx-victory'); sfx.victory(); }
+    if(list.includes('levelup')){ toast('★ LEVEL UP ★'); burst(); sfx.levelup(); }
   }
   function renderScreen(m){
-    if(!named){ named=true; $('login').classList.add('hidden'); $('game').classList.add('show'); $('cmd').placeholder='type a command…'; }
+    if(!named){ named=true; $('login').classList.add('hidden'); $('game').classList.add('show'); $('cmd').placeholder='type a command…'; sfx.coin(); }
     const accent = THEME[m.color] || THEME.green;
     document.documentElement.style.setProperty('--accent', accent);
     const h=m.hud||{};
@@ -182,7 +285,7 @@
     $('endsite').innerHTML = endSite ? ` · <a href="${endSite}">back to the arcade</a>` : '';
     $('again').onclick=()=>location.reload();
   }
-  function sendCmd(v){ if(ws&&ws.readyState===1) ws.send(v); }
+  function sendCmd(v){ if(ws&&ws.readyState===1){ ws.send(v); sfx.send(); } }
   function submit(){ const v=$('cmd').value; $('cmd').value=''; sendCmd(v); }
   $('send').onclick=submit;
   $('cmd').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); }});

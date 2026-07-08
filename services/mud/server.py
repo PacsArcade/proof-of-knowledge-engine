@@ -29,6 +29,7 @@ import sys
 import textwrap
 import threading
 import time
+import unicodedata
 import urllib.request
 
 try:
@@ -56,6 +57,12 @@ def frens_aware() -> bool:
 
 
 # --- persistence (shared with state-sync) ------------------------------------
+# Data files live next to the service, not the caller's cwd — the server behaves the
+# same whether launched from the repo root, services/mud, or a process manager.
+DATA_DIR = os.environ.get("PA_MUD_DATA_DIR",
+                          os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
+os.environ.setdefault("PA_GAMESTATE_SQLITE", os.path.join(DATA_DIR, "gamestate.dev.sqlite"))
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 import world_store  # noqa: E402
 import webbridge     # noqa: E402  (same dir as this file — the browser WebSocket bridge)
@@ -87,6 +94,35 @@ HOME = "\x1b[H"                       # cursor to top-left (in-place redraw)
 CLEAR = "\x1b[2J\x1b[3J\x1b[H"        # full clear + scrollback, home
 RESIZE = "\x1b[8;42;112t"            # ask for 42x112 (honored by some terminals; resize freely)
 
+
+def _enable_vt() -> bool:
+    """Enable ANSI (virtual-terminal) processing for the SERVER's own console and report
+    whether stdout is an interactive TTY that can host the in-place status line."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
+        if not sys.stdout.isatty():
+            return False
+    except Exception:
+        return False
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-11)                       # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not k.GetConsoleMode(h, ctypes.byref(mode)):
+            return False
+        return bool(k.SetConsoleMode(h, mode.value | 0x0004))   # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        return False
+
+
+VT_TTY = _enable_vt()
+
 # --- ANSI 8-bit palette ------------------------------------------------------
 R = "\x1b[0m"
 BOLD = "\x1b[1m"
@@ -103,24 +139,129 @@ def c(color: str, s: str) -> str:
     return f"{color}{s}{R}"
 
 
-# --- banner (simple + aligned; shown once before the game window) ------------
+# --- display width (emoji/wide-glyph aware, so the frame border never jogs) ----
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_ZERO_WIDTH = {0x200D, 0xFE0E, 0xFE0F}          # ZWJ + variation selectors
+# Terminal-double-wide singletons outside the emoji planes (⭐ ⚡ ❤ …).
+_WIDE_ONES = {0x2B50, 0x26A1, 0x2764, 0x2B55, 0x267B}
+
+
+def _ch_width(ch: str) -> int:
+    o = ord(ch)
+    if o in _ZERO_WIDTH or unicodedata.combining(ch):
+        return 0
+    if 0x1F000 <= o <= 0x1FAFF or o in _WIDE_ONES:
+        return 2
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def dwidth(s: str) -> int:
+    return sum(_ch_width(ch) for ch in s)
+
+
+def dw_crop(s: str, width: int) -> str:
+    out, w = [], 0
+    for ch in s:
+        cw = _ch_width(ch)
+        if w + cw > width:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
+
+
+def dw_ljust(s: str, width: int) -> str:
+    s = dw_crop(s, width)
+    return s + " " * (width - dwidth(s))
+
+
+def ansi_crop(s: str, width: int) -> str:
+    """Crop a COLORED string to a display width — escape codes pass through free,
+    and a cropped line closes its colors so nothing bleeds into the next row."""
+    out, w, i = [], 0, 0
+    while i < len(s):
+        m = _ANSI.match(s, i)
+        if m:
+            out.append(m.group())
+            i = m.end()
+            continue
+        cw = _ch_width(s[i])
+        if w + cw > width - 1:                    # reserve one cell for the ellipsis
+            return "".join(out) + R + c(GREY, "…")
+        out.append(s[i])
+        w += cw
+        i += 1
+    return "".join(out)
+
+
+# One glyph family for movement everywhere: filled = compass, hollow = vertical.
+DIR_GLYPH = {"north": "▲", "south": "▼", "east": "►", "west": "◄", "up": "△", "down": "▽"}
+
+
+def exits_line(room: dict) -> str:
+    return "Exits: " + " · ".join(f"{DIR_GLYPH.get(d, '·')} {d}" for d in room["exits"])
+
+
+def dir_to(src: str, dst: str) -> "str | None":
+    """First-step direction from src toward dst over the room graph (BFS), or None if
+    unreachable / already there. Keeps every hint truthful from ANY room."""
+    if src == dst:
+        return None
+    seen, queue = {src}, [(src, None)]
+    while queue:
+        room, first = queue.pop(0)
+        for d, nxt in ROOMS.get(room, {}).get("exits", {}).items():
+            step = first or d
+            if nxt == dst:
+                return step
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append((nxt, step))
+    return None
+
+
+def hint_to(src: str, dst: str, label: str) -> str:
+    """'the Oracle is ▲ north of here' — or 'right here' when you've arrived."""
+    d = dir_to(src, dst)
+    if d is None:
+        return f"{label} is right here"
+    return f"{label} is {DIR_GLYPH[d]} {d} of here"
+
+
+# --- banner + attract mode (shown once before the game window) ---------------
+# Block-letter logo — narrow glyphs only (█ ▀ ▄ are single-cell) so it centers cleanly.
+LOGO = [
+    "█▀▀▄ █▀▀█ █ ▄▀ █▀▀▀ █▀▄▀█ █  █ █▀▀▄",
+    "█▄▄▀ █  █ ██   █▀▀  █ ▀ █ █  █ █  █",
+    "█    █▄▄█ █ ▀▄ █▄▄▄ █   █ █▄▄█ █▄▄▀",
+]
+
+BOOT_LINES = [
+    ("CRT POWER ...........", "OK"),
+    ("COIN MECH ...........", "OK"),
+    ("KNOWLEDGE CORE ......", "LOADED"),
+    ("ORACLE LINK .........", "VIOLET"),
+]
+
+
 def make_banner(accent: str = BOLD + GOLD) -> str:
-    """The login banner. `accent` colors the POKEMUD title — cycled to make it glimmer."""
+    """The login banner. `accent` colors the POKEMUD logo — cycled to make it glimmer."""
     lines = [
         "",
         "PAC'S  ARCADE",
         "presents",
         "",
-        "P  O  K  E  M  U  D",
+        *LOGO,
+        "",
         "Proof of Knowledge Engine",
         "",
         "type  help  for the controls   ·   type  quit  to leave",
         "",
     ]
-    width = max(len(l) for l in lines) + 8
+    width = max(dwidth(l) for l in lines) + 8
     out = [c(MAG, "╔" + "═" * width + "╗")]
     for ln in lines:
-        if "P  O  K  E" in ln:
+        if ln in LOGO:
             col = accent
         elif "PAC'S" in ln:
             col = BOLD + AMBER
@@ -128,7 +269,8 @@ def make_banner(accent: str = BOLD + GOLD) -> str:
             col = AMBER
         else:
             col = GREY
-        out.append(c(MAG, "║") + c(col, ln.center(width)) + c(MAG, "║"))
+        pad = width - dwidth(ln)
+        out.append(c(MAG, "║") + c(col, " " * (pad // 2) + ln + " " * (pad - pad // 2)) + c(MAG, "║"))
     out.append(c(MAG, "╚" + "═" * width + "╝"))
     return "\n" + "\n".join(out) + "\n" + c(GREY, "  a study buddy for your cyberdeck  ·  welcome, fren. 💜") + "\n"
 
@@ -137,21 +279,36 @@ BANNER = make_banner()
 # Colors the title cycles through on login so PAC'S ARCADE / POKEMUD glimmers.
 SHIMMER = [BOLD + GOLD, BOLD + CYAN, BOLD + MAG, BOLD + AMBER, BOLD + GREEN, BOLD + GOLD]
 
-# Kept to <=12 lines and <=68 cols each so it never overflows the framed window.
-HELP_LINES = [
-    "",
-    "  Move:  north south east west up down    (n/s/e/w shortcuts)",
-    "  look (l) ....... look around the room",
-    "  talk oracle .... speak with the Oracle   ·   answer <text>",
-    "  ask oracle <q>    challenge    (the boss is 'down' from here)",
-    "  pull lever ..... use a feature in the room",
-    "  stats / examine <name>    your attributes / see a fren",
-    "  link fren <name>    verify <code>    backup    (identity)",
-    "  profile · certs · inventory · who · say <msg> · quit",
-    "",
-    "  Type naturally - 'sup', 'go down', 'who's the boss' all work.",
-    "",
-]
+def help_lines(p: "Player") -> list[str]:
+    """The help panel — grouped, two-column, and room-aware (the boss hint is computed
+    from where the player actually stands, so 'down' is never a lie)."""
+    boss = hint_to(p.room, "dungeon", "the boss")
+    return [
+        "  ▸ MOVE",
+        "   north south east west up down     shortcuts: n s e w u d",
+        "   go <dir>  ·  look (l)             look around the room",
+        "",
+        "  ▸ LEARN",
+        "   talk oracle          begin the Oracle's trial",
+        "   ask oracle <q>       ask anything  ·  answer <text>  reply",
+        f"   challenge            {boss}",
+        "   pull lever           use a feature in the room",
+        "",
+        "  ▸ YOU",
+        "   stats · profile      your attributes / your identity card",
+        "   certs · inventory    your runes / what you carry",
+        "   examine <name>       look at another fren",
+        "",
+        "  ▸ IDENTITY",
+        "   link fren <name>     claim your @fren   (then: verify <code>)",
+        "   link nostr|space     bind identities  ·  backup   anchor it",
+        "",
+        "  ▸ SOCIAL",
+        "   say <msg> · who      talk to the room / see who's online",
+        "   quit                 save + leave",
+        "",
+        "  Type naturally — 'sup', 'go down', 'who is the boss' all work.",
+    ]
 
 
 # --- the world ---------------------------------------------------------------
@@ -293,7 +450,7 @@ def focus_room(p: Player) -> None:
     if others:
         lines.append("Also here: " + ", ".join(others))
     lines.append("")
-    lines.append("Exits: " + ", ".join(room["exits"].keys()))    # also shown as arrows on the frame
+    lines.append(exits_line(room))    # same glyphs as the arrows on the frame border
     p.focus = {"title": room["title"], "lines": lines, "color": GREEN}
 
 
@@ -321,38 +478,52 @@ def _render_border(chars: list[str], doors: set) -> str:
     return out
 
 
+FRAME_MAX_H = 26     # a panel may grow to this many body rows before it truncates
+
+
 def _frame(title: str, body: list[str], exits: dict, color: str) -> list[str]:
     W = BOARD_W
-    rows = list(body)[:BODY_H]
+    # Wrap anything that would overflow the frame; grow the window (up to FRAME_MAX_H)
+    # instead of silently cutting a panel off at BODY_H.
+    rows: list[str] = []
+    for line in body:
+        if dwidth(line) <= W - 2:
+            rows.append(line)
+        else:
+            rows += _wrap(line, W - 4)
+    if len(rows) > FRAME_MAX_H:
+        rows = rows[:FRAME_MAX_H - 1] + ["… (the rest is cut off — this panel is too tall)"]
     while len(rows) < BODY_H:
         rows.append("")
-    mid = BODY_H // 2
+    mid = len(rows) // 2
 
-    # top: cyan ▲ (north, centered) + a cyan ▲up corner (up), then the title
+    # top: ▲ north (centered) + a hollow '△ up' corner tag, then the title
     top = list("═" * W); tdoors = set()
     if "north" in exits:
         top[W // 2] = "▲"; tdoors.add(W // 2)
     if "up" in exits:
-        for j, ch in enumerate("▲up"):
-            top[W - 7 + j] = ch; tdoors.add(W - 7 + j)
+        tag = "△ up"
+        for j, ch in enumerate(tag):
+            top[W - len(tag) - 3 + j] = ch; tdoors.add(W - len(tag) - 3 + j)
     for i, ch in enumerate(f"╡ {title} ╞"):
         if 3 + i < W and (3 + i) not in tdoors:
             top[3 + i] = ch
     out = [c(MAG, "╔") + _render_border(top, tdoors) + c(MAG, "╗")]
 
-    # sides: cyan ◄ / ► doors on the middle row
+    # sides: ◄ / ► compass doors on the middle row
     for i, line in enumerate(rows):
         left = c(CYAN, "◄") if (i == mid and "west" in exits) else c(MAG, "║")
         right = c(CYAN, "►") if (i == mid and "east" in exits) else c(MAG, "║")
-        out.append(left + " " + c(color, line[:W - 2].ljust(W - 2)) + " " + right)
+        out.append(left + " " + c(color, dw_ljust(line, W - 2)) + " " + right)
 
-    # bottom: cyan ▼ (south, centered) + a cyan ▼dn corner (down)
+    # bottom: ▼ south (centered) + a hollow '▽ down' corner tag
     bot = list("═" * W); bdoors = set()
     if "south" in exits:
         bot[W // 2] = "▼"; bdoors.add(W // 2)
     if "down" in exits:
-        for j, ch in enumerate("▼down"):
-            bot[W - 7 + j] = ch; bdoors.add(W - 7 + j)
+        tag = "▽ down"
+        for j, ch in enumerate(tag):
+            bot[W - len(tag) - 3 + j] = ch; bdoors.add(W - len(tag) - 3 + j)
     out.append(c(MAG, "╚") + _render_border(bot, bdoors) + c(MAG, "╝"))
     return out
 
@@ -367,8 +538,10 @@ def render_screen(p: Player) -> str:
     frame = _frame(f["title"], f["lines"], room["exits"], f.get("color", GREEN))
     log = list(p.log)[-LOG_H:]
     log = [""] * (LOG_H - len(log)) + log            # bottom-align the log
-    parts = [header, hud, ""] + frame + ["", c(GREY, "  ── messages ──")]
-    parts += ["  " + l for l in log]
+    # Crop every free-form row to the window width — a line that hard-wraps in the
+    # terminal would shift the whole in-place redraw.
+    parts = [ansi_crop(header, BOARD_W + 2), hud, ""] + frame + ["", c(GREY, "  ── messages ──")]
+    parts += ["  " + ansi_crop(l, BOARD_W) for l in log]
     parts += ["", c(AMBER, f"  {who} ") + c(GREY, "» ")]
     out = HOME
     for ln in parts[:-1]:
@@ -380,7 +553,6 @@ def render_screen(p: Player) -> str:
 # --- JSON render mode (browser clients) --------------------------------------
 # Telnet clients get ANSI (render_screen). Browser clients get a STRUCTURED screen model, so the
 # web client can render it as real UI — glow, animation, sound — instead of interpreting ANSI.
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _COLOR_NAME = {GREEN: "green", AMBER: "amber", CYAN: "cyan", MAG: "magenta",
                GREY: "grey", RED: "red", GOLD: "gold"}
 
@@ -544,6 +716,7 @@ async def etch_class_rune(p: Player, spec: dict) -> None:
     old_level = p.level
     res = await asyncio.to_thread(STORE.add_xp, p.name, 100); p.xp, p.level = res["xp"], res["level"]
     p.pending_fx.append("etch")                        # cue the web client to glow/particle the etch
+    event("etch", f"{display_name(p)} etched {spec['rune']} (+100 xp)")
     await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.3)
     focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
     if p.level > old_level:
@@ -654,8 +827,9 @@ async def show_profile(p: Player) -> None:
 
 async def show_certs(p: Player) -> None:
     if not p.certs:
+        where = hint_to(p.room, "alcove", "The Oracle's Alcove")
         focus_text(p, "Your runes", ["", "  No class runes yet.", "",
-                                      "  The Oracle's Alcove (north) is where they're earned. 🎓"], GOLD)
+                                      f"  {where} — runes are earned there. 🎓"], GOLD)
         return
     lines = ["", "  Your soulbound class runes:", ""]
     for cert in p.certs:
@@ -673,6 +847,47 @@ def _fmt_dur(secs: float) -> str:
     secs = int(secs)
     h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
     return (f"{h}h " if h else "") + f"{m:02d}m {s:02d}s"
+
+
+# --- console output: event feed + a single in-place status line ----------------
+# On a real TTY the status line REFRESHES in place (no 1-min scroll spam); events print
+# above it. Piped/service stdout falls back to change-only lines + a 5-min heartbeat.
+STATUS_EVERY = max(5, int(os.environ.get("PA_STATUS_EVERY", "60")))
+_EVENTS: deque = deque(maxlen=500)
+_EVENT_ID = 0
+_STATUS_TXT = ""
+EVENT_COLORS = {"join": GREEN, "part": GREY, "etch": GOLD, "levelup": GOLD,
+                "admin": CYAN, "warn": RED, "info": GREY}
+
+
+def cprint(line: str = "") -> None:
+    """Print a console line without clobbering the in-place status line."""
+    if VT_TTY and _STATUS_TXT:
+        sys.stdout.write("\r\x1b[K" + line + "\n" + _STATUS_TXT)
+    else:
+        sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
+
+def _draw_status(line: str) -> None:
+    global _STATUS_TXT
+    _STATUS_TXT = line
+    if VT_TTY:
+        sys.stdout.write("\r\x1b[K" + line)
+        sys.stdout.flush()
+
+
+def event(kind: str, msg: str) -> None:
+    """Record an operator-visible event (ring buffer → console + GET /events)."""
+    global _EVENT_ID
+    _EVENT_ID += 1
+    _EVENTS.append({"id": _EVENT_ID, "at": time.strftime("%H:%M:%S"), "kind": kind, "msg": msg})
+    cprint("  " + c(GREY, time.strftime("%H:%M:%S")) + " "
+           + c(EVENT_COLORS.get(kind, GREY), f"{kind:>7}") + c(GREY, " │ ") + msg)
+
+
+def events_since(since: int) -> dict:
+    return {"events": [e for e in _EVENTS if e["id"] > int(since)], "next": _EVENT_ID}
 
 
 _swarm_cache = {"at": 0.0, "data": None}
@@ -772,6 +987,7 @@ async def op_broadcast(msg: str) -> str:
             await show(pl)
         except Exception:
             pass
+    event("admin", f"broadcast: {msg[:80]}")
     return f"broadcast to {len(PLAYERS)} player(s)"
 
 
@@ -784,6 +1000,7 @@ async def op_kick(name: str) -> str:
             except Exception:
                 pass
             PLAYERS.pop(w, None)
+            event("admin", f"kicked {pl.name}")
             return f"kicked {pl.name}"
     return f"no player matching '{name}'"
 
@@ -792,6 +1009,7 @@ async def op_shutdown(reason: str = "maintenance", reboot: bool = False) -> str:
     global REBOOT
     REBOOT = reboot
     verb = "rebooting" if reboot else "shutting down"
+    event("admin", f"{verb} ({reason})")
     await op_broadcast(f"P.O.K.E. is {verb} now ({reason}). Progress saved — back soon, fren. 💜")
     await asyncio.sleep(0.3)
     SHUTDOWN.set()
@@ -825,7 +1043,8 @@ async def forward_chat_to_matrix(room: str, sender: str, body: str) -> None:
 
 CONSOLE_HELP = (
     "P.O.K.E. operator console:\n"
-    "  stats · who · nodes · broadcast <m> · kick <n> · chat on|off · reboot · shutdown · help"
+    "  stats · who · nodes · events · broadcast <m> · kick <n> · chat on|off\n"
+    "  ext <name> on|off · games · reboot · shutdown · help"
 )
 
 
@@ -835,25 +1054,36 @@ async def handle_console(cmd: str) -> None:
     if not verb:
         return
     if verb in ("help", "?"):
-        print(CONSOLE_HELP)
+        cprint(CONSOLE_HELP)
     elif verb in ("stats", "status"):
-        print(stats_report())
+        cprint(stats_report())
     elif verb == "who":
-        print(f"{len(PLAYERS)} online: " + ", ".join((f"@{p.fren_tag}" if p.fren_tag else p.name) for p in PLAYERS.values()))
+        cprint(f"{len(PLAYERS)} online: " + ", ".join((f"@{p.fren_tag}" if p.fren_tag else p.name) for p in PLAYERS.values()))
     elif verb in ("nodes", "swarm"):
-        print(nodes_report(await get_swarm_status(force=True)))
+        cprint(nodes_report(await get_swarm_status(force=True)))
+    elif verb in ("events", "log"):
+        for e in list(_EVENTS)[-15:]:
+            cprint(f"  {e['at']} {e['kind']:>7} │ {e['msg']}")
     elif verb in ("broadcast", "bcast", "say"):
-        print(await op_broadcast(rest) if rest else "usage: broadcast <message>")
+        cprint(await op_broadcast(rest) if rest else "usage: broadcast <message>")
     elif verb == "kick":
-        print(await op_kick(rest) if rest else "usage: kick <name>")
+        cprint(await op_kick(rest) if rest else "usage: kick <name>")
     elif verb == "chat":
-        print(set_chat_matrix(rest.lower() in ("on", "1", "true", "yes")))
+        cprint(set_chat_matrix(rest.lower() in ("on", "1", "true", "yes")))
+    elif verb == "ext":
+        name, _, state = rest.partition(" ")
+        cprint(extensions_set(name.strip(), state.strip().lower() in ("on", "1", "true", "yes"))
+               if name else "usage: ext <name> on|off   (extensions: " + ", ".join(_load_extensions()) + ")")
+    elif verb == "games":
+        cprint("\n".join(f"  {g['name']:<14} {g['kind']:<8} {g.get('url', '') or '—':<28} "
+                         f"{'ON' if g.get('enabled') else 'off'}{'  [builtin]' if g.get('builtin') else ''}"
+                         for g in _load_games()))
     elif verb == "reboot":
-        print(await op_shutdown("operator reboot", reboot=True))
+        cprint(await op_shutdown("operator reboot", reboot=True))
     elif verb == "shutdown":
-        print(await op_shutdown("operator shutdown", reboot=False))
+        cprint(await op_shutdown("operator shutdown", reboot=False))
     else:
-        print(f"unknown console command '{verb}' — type help")
+        cprint(f"unknown console command '{verb}' — type help")
 
 
 def _start_console(loop: asyncio.AbstractEventLoop) -> None:
@@ -866,17 +1096,28 @@ def _start_console(loop: asyncio.AbstractEventLoop) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-async def _status_ticker(interval: int = 60) -> None:
+async def _status_ticker(interval: "int | None" = None) -> None:
+    """TTY: refresh ONE status line in place. Non-TTY: print only on change (+5-min heartbeat)."""
+    interval = interval or (STATUS_EVERY if VT_TTY else min(STATUS_EVERY, 60))
+    last_sig, last_print = None, 0.0
     while not SHUTDOWN.is_set():
+        sw = await get_swarm_status()
+        peers = sw.get("peers", sw.get("nodes", 0)) if sw.get("online") else "offline"
+        up = _fmt_dur(time.time() - SERVER_START)
+        if VT_TTY:
+            _draw_status(c(MAG, "▓ ") + c(BOLD + GREEN, f"{len(PLAYERS)} online")
+                         + c(GREY, " · swarm: ") + c(CYAN if sw.get("online") else GREY, str(peers))
+                         + c(GREY, f" · up {up} · ") + c(AMBER, WORLD)
+                         + c(GREY, " · type 'help' for console commands "))
+        else:
+            sig = (len(PLAYERS), str(peers))
+            if sig != last_sig or time.time() - last_print >= 300:
+                print(f"[status] {len(PLAYERS)} online · swarm nodes: {peers} · uptime {up}", flush=True)
+                last_sig, last_print = sig, time.time()
         try:
             await asyncio.wait_for(SHUTDOWN.wait(), timeout=interval)
         except asyncio.TimeoutError:
             pass
-        if SHUTDOWN.is_set():
-            break
-        sw = await get_swarm_status()
-        peers = sw.get("peers", sw.get("nodes", 0)) if sw.get("online") else "offline"
-        print(f"[status] {len(PLAYERS)} online · swarm nodes: {peers} · uptime {_fmt_dur(time.time() - SERVER_START)}")
 
 
 # --- HTTP control rails (serves the web-admin page + JSON API) ----------------
@@ -891,6 +1132,15 @@ class _AdminHTTP(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
         tok = self.headers.get("X-POKE-Admin-Token", "")
         return bool(tok) and secrets.compare_digest(tok, ADMIN_TOKEN)
+
+    def _bot_blocked(self) -> bool:
+        """Server-owner bots identify with X-POKE-Bot; refuse them while their extension is off."""
+        bot = self.headers.get("X-POKE-Bot", "").strip()
+        if bot and not extension_enabled(bot):
+            self._reply(403, {"error": f"extension '{bot}' is disabled — the owner can enable it "
+                                       "in the node console (Extensions) or:  ext " + bot.lower() + " on"})
+            return True
+        return False
 
     def _reply(self, code: int, obj: dict) -> None:
         body = json.dumps(obj).encode()
@@ -926,8 +1176,24 @@ class _AdminHTTP(BaseHTTPRequestHandler):
                                      "node": os.environ.get("PA_NODE_NAME", "a POKE node")})
         if not self._authed():
             return self._reply(401, {"error": "unauthorized"})
+        if self._bot_blocked():
+            return
         if path in ("/stats", "/health"):
             self._reply(200, stats_json())
+        elif path == "/events":
+            since = 0
+            if "?" in self.path:
+                for kv in self.path.split("?", 1)[1].split("&"):
+                    if kv.startswith("since="):
+                        try:
+                            since = int(kv.split("=")[1])
+                        except Exception:
+                            pass
+            self._reply(200, events_since(since))
+        elif path == "/games":
+            self._reply(200, {"games": _load_games()})
+        elif path == "/extensions":
+            self._reply(200, {"extensions": _load_extensions()})
         elif path == "/nodes":
             self._reply(200, self._run(get_swarm_status(True)))
         elif path == "/system":
@@ -962,6 +1228,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._authed():
             return self._reply(401, {"error": "unauthorized"})
+        if self._bot_blocked():
+            return
         length = int(self.headers.get("Content-Length", 0) or 0)
         try:
             data = json.loads(self.rfile.read(length) or b"{}") if length else {}
@@ -988,6 +1256,18 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"ok": True, "result": relays_remove(str(data.get("name", "")).strip())})
         elif path == "/relays/toggle":
             self._reply(200, {"ok": True, "result": relays_toggle(
+                str(data.get("name", "")).strip(), bool(data.get("enabled")))})
+        elif path == "/games":
+            self._reply(200, {"ok": True, "result": games_add(
+                str(data.get("name", "")).strip(), str(data.get("kind", "")).strip(),
+                str(data.get("url", "")).strip())})
+        elif path == "/games/remove":
+            self._reply(200, {"ok": True, "result": games_remove(str(data.get("name", "")).strip())})
+        elif path == "/games/toggle":
+            self._reply(200, {"ok": True, "result": games_toggle(
+                str(data.get("name", "")).strip(), bool(data.get("enabled")))})
+        elif path == "/extensions":
+            self._reply(200, {"ok": True, "result": extensions_set(
                 str(data.get("name", "")).strip(), bool(data.get("enabled")))})
         elif path == "/torrent":
             self._reply(200, {"ok": True, "result": torrent_control(
@@ -1139,7 +1419,7 @@ async def show_attributes(p: Player) -> None:
         f"  @fren     : {('@' + p.fren_tag) if p.fren_tag else 'unlinked  (link fren <name>)'}",
         "",
         "  Earn xp from the Oracle and by defeating bosses.",
-        "  The dungeon is  down  from the entrance.  See a fren:  examine <name>",
+        f"  {hint_to(p.room, 'dungeon', 'The dungeon')}.  See a fren:  examine <name>",
     ], CYAN)
 
 
@@ -1365,7 +1645,7 @@ def system_metrics() -> dict:
     return {"available": False, "reason": "no metrics backend (pip install psutil)"}
 
 
-RELAYS_FILE = os.environ.get("PA_RELAYS_FILE", os.path.join("data", "relays.json"))
+RELAYS_FILE = os.environ.get("PA_RELAYS_FILE", os.path.join(DATA_DIR, "relays.json"))
 
 
 def _load_relays() -> list:
@@ -1404,6 +1684,92 @@ def relays_toggle(name: str, enabled: bool) -> str:
             r["enabled"] = bool(enabled)
     _save_relays(relays)
     return f"'{name}' {'enabled' if enabled else 'disabled'}"
+
+
+# --- linked games (other front-ends into this pokenode — Luanti lands here) ----
+GAMES_FILE = os.environ.get("PA_GAMES_FILE", os.path.join(DATA_DIR, "games.json"))
+_BUILTIN_GAMES = [{"name": "POKEMUD", "kind": "mud", "url": "/play", "status": "live",
+                   "enabled": True, "builtin": True}]
+
+
+def _load_games() -> list:
+    try:
+        with open(GAMES_FILE) as f:
+            extra = json.load(f).get("games", [])
+    except Exception:
+        extra = []
+    return list(_BUILTIN_GAMES) + [g for g in extra if not g.get("builtin")]
+
+
+def _save_games(games: list) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(GAMES_FILE)), exist_ok=True)
+    with open(GAMES_FILE, "w") as f:
+        json.dump({"games": [g for g in games if not g.get("builtin")]}, f, indent=2)
+
+
+def games_add(name: str, kind: str, url: str) -> str:
+    if not name:
+        return "need a game name"
+    if name.upper() in {g["name"].upper() for g in _BUILTIN_GAMES}:
+        return f"'{name}' is built in"
+    games = [g for g in _load_games() if g.get("name") != name]
+    games.append({"name": name, "kind": kind or "game", "url": url, "status": "linked",
+                  "enabled": True, "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    _save_games(games)
+    event("admin", f"linked game '{name}' ({kind or 'game'})")
+    return f"linked '{name}'"
+
+
+def games_remove(name: str) -> str:
+    _save_games([g for g in _load_games() if g.get("name") != name])
+    return f"unlinked '{name}'"
+
+
+def games_toggle(name: str, enabled: bool) -> str:
+    games = _load_games()
+    for g in games:
+        if g.get("name") == name and not g.get("builtin"):
+            g["enabled"] = bool(enabled)
+    _save_games(games)
+    return f"'{name}' {'enabled' if enabled else 'disabled'}"
+
+
+# --- extensions (owner-toggled add-ons; the pacBOT ops bot is the first) --------
+EXT_FILE = os.environ.get("PA_EXTENSIONS_FILE", os.path.join(DATA_DIR, "extensions.json"))
+_EXT_DEFAULTS = {
+    "pacbot": {"enabled": False,
+               "desc": "pacBOT ops bot — may read stats/events and act for the owner (see docs/BOT-EXTENSION.md)"},
+}
+
+
+def _load_extensions() -> dict:
+    ext = {k: dict(v) for k, v in _EXT_DEFAULTS.items()}
+    try:
+        with open(EXT_FILE) as f:
+            for k, v in json.load(f).get("extensions", {}).items():
+                ext.setdefault(k, {})["enabled"] = bool(v.get("enabled"))
+                if v.get("desc"):
+                    ext[k]["desc"] = v["desc"]
+    except Exception:
+        pass
+    return ext
+
+
+def extensions_set(name: str, enabled: bool) -> str:
+    name = name.lower().strip()
+    ext = _load_extensions()
+    if name not in ext:
+        return f"unknown extension '{name}' (have: {', '.join(ext)})"
+    ext[name]["enabled"] = bool(enabled)
+    os.makedirs(os.path.dirname(os.path.abspath(EXT_FILE)), exist_ok=True)
+    with open(EXT_FILE, "w") as f:
+        json.dump({"extensions": ext}, f, indent=2)
+    event("admin", f"extension '{name}' {'ON' if enabled else 'off'}")
+    return f"extension '{name}' {'ON' if enabled else 'off'}"
+
+
+def extension_enabled(name: str) -> bool:
+    return bool(_load_extensions().get(name.lower().strip(), {}).get("enabled"))
 
 
 def torrent_status() -> dict:
@@ -1556,6 +1922,7 @@ async def op_mute(name: str, on: bool, reason: str = "") -> str:
         await show(pl)
     except Exception:
         pass
+    event("admin", f"{pl.name} {'muted' if on else 'unmuted'}")
     return f"{pl.name} {'muted' if on else 'unmuted'}"
 
 
@@ -1570,6 +1937,7 @@ async def op_timeout(name: str, minutes: int, reason: str = "") -> str:
         await show(pl)
     except Exception:
         pass
+    event("admin", f"{pl.name} timed out {int(minutes)}m")
     return f"{pl.name} timed out {int(minutes)}m"
 
 
@@ -1646,7 +2014,7 @@ async def dispatch(p: Player, line: str) -> bool:
             await p.send(CLEAR + c(MAG, "\r\n  " + "\r\n  ".join(lines) + "\r\n"))
         return False
     if verb in ("help", "?", "commands"):
-        focus_text(p, "How to play", HELP_LINES, GREY)
+        focus_text(p, "How to play", help_lines(p), GREY)
     elif verb in ("look", "l"):
         focus_room(p)
     elif verb in ("go", "move", "walk"):
@@ -1673,7 +2041,7 @@ async def dispatch(p: Player, line: str) -> bool:
         if tgt.lower() == "oracle" and "oracle" in ROOMS[p.room]["npcs"]:
             await converse_oracle(p, q.strip() or "teach me something about bitcoin")
         elif "oracle" not in ROOMS[p.room]["npcs"]:
-            push(p, c(GREY, "the Oracle is in its Alcove (north from the entrance)"))
+            push(p, c(GREY, hint_to(p.room, "alcove", "the Oracle") + " — in its Alcove"))
         else:
             push(p, c(GREY, "ask whom? try:  ask oracle <your question>"))
     elif verb == "pull":
@@ -1688,7 +2056,7 @@ async def dispatch(p: Player, line: str) -> bool:
         if "wraith" in ROOMS[p.room]["npcs"]:
             await boss_open(p)
         else:
-            push(p, c(GREY, "nothing to challenge here — the dungeon is  down  from the entrance"))
+            push(p, c(GREY, "nothing to challenge here — " + hint_to(p.room, "dungeon", "the Proof Dungeon")))
     elif verb in ("stats", "attributes", "attr", "level"):
         await show_attributes(p)
     elif verb in ("examine", "inspect", "x"):
@@ -1736,7 +2104,8 @@ async def move(p: Player, direction: str) -> None:
         await broadcast_room(p.room, c(GREY, f"{who} arrives."), exclude=p)
         focus_room(p)
     else:
-        push(p, c(GREY, "you can't go that way, fren"))
+        push(p, c(GREY, "you can't go that way, fren — exits: "
+                  + ", ".join(f"{DIR_GLYPH[d]} {d}" for d in exits)))
 
 
 async def pull(p: Player, thing: str) -> None:
@@ -1772,10 +2141,57 @@ def clean_line(raw: bytes) -> str:
     return out.decode("utf-8", "replace").strip()
 
 
+async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None":
+    """The arcade boot + attract sequence (terminal clients). Any keypress skips ahead;
+    if the player typed an actual word, it's returned to feed the name prompt."""
+    pre: "str | None" = None
+    skipped = False
+
+    async def pause(delay: float) -> None:
+        nonlocal pre, skipped
+        if skipped:
+            return
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=delay)
+        except asyncio.TimeoutError:
+            return
+        if not raw and reader.at_eof():
+            skipped = True
+            return
+        line = clean_line(raw)
+        if line:
+            pre = line
+        skipped = True
+
+    await p.send(CLEAR + "\r\n\r\n")
+    for label, status in BOOT_LINES:                  # a tiny CRT boot check
+        if skipped:
+            break
+        await p.send("   " + c(GREY, "▓ " + label + " ") + c(GREEN, status) + "\r\n")
+        await pause(0.22)
+    await pause(0.35)
+    for col in SHIMMER:                               # the logo glimmers ✨
+        if skipped:
+            break
+        await p.send(CLEAR + make_banner(col))
+        await pause(0.16)
+    if skipped:
+        await p.send(CLEAR + make_banner())
+    for i in range(4):                                # INSERT COIN blink
+        if skipped:
+            break
+        coin = c(BOLD + GOLD, "▶ INSERT COIN ◀") if i % 2 == 0 else c(GREY, "  INSERT COIN  ")
+        await p.send("\r" + " " * 14 + coin + "\x1b[K")
+        await pause(0.4)
+    await p.send("\r\x1b[K")
+    return pre
+
+
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, web: bool = False) -> None:
     p = Player(writer)
     p.web = web
     PLAYERS[writer] = p
+    pre_name: "str | None" = None
     try:
         if web:
             # The browser renders its own (magical) login; just hand it the node info + a name prompt.
@@ -1784,16 +2200,19 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                      "prompt": "By what name shall the arcade know you, fren?"}))
         else:
             await p.send(RESIZE)
-            for col in SHIMMER:                       # the banner glimmers on login ✨
-                await p.send(CLEAR + make_banner(col))
-                await asyncio.sleep(0.16)
+            pre_name = await attract_intro(p, reader)
+            if reader.at_eof():
+                return
             await p.send(c(AMBER, "\nBy what name shall the arcade know you, fren? "))
         # --- name entry: reject command words as names (so no one is called "help"/"quit") ---
         for _ in range(4):
-            raw = await reader.readline()
-            if not raw and reader.at_eof():
-                return
-            name = clean_line(raw)
+            if pre_name:                              # typed during the attract sequence
+                name, pre_name = pre_name, None
+            else:
+                raw = await reader.readline()
+                if not raw and reader.at_eof():
+                    return
+                name = clean_line(raw)
             if not name:
                 await _prompt_again(p, "a name, fren?")
                 continue
@@ -1839,18 +2258,22 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             else:
                 focus_room(p)
         else:
-            # Welcome back with a summary + a nudge toward next goals.
+            # Welcome back with a summary + a nudge toward next goals (directions computed
+            # from where the player actually is, so the hints are never wrong).
+            oracle_hint = hint_to(p.room, "alcove", "the Oracle")
+            boss_hint = hint_to(p.room, "dungeon", "the boss")
             focus_text(p, f"Welcome back, {hello}", [
                 "",
                 f"  Level {p.level} · {p.xp} xp · {len(p.certs)} rune(s) · energy {p.energy}/100",
                 f"  Last seen in: {ROOMS[p.room]['title']}",
                 "",
                 "  Good to see you, fren. What would you like to work on next?",
-                "  Ask the Oracle (north), face a boss (down), or just  look  around.",
+                f"  {oracle_hint}; {boss_hint} — or just  look  around.",
                 "",
             ], AMBER)
             push(p, c(MAG, f"Welcome back, {hello}. Your progress was kept."))
         await broadcast_room(p.room, c(GREY, f"{hello} steps in from the street."), exclude=p)
+        event("join", f"{hello} stepped in ({'web' if web else 'terminal'})")
         await show(p)
 
         while not reader.at_eof():
@@ -1870,6 +2293,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     finally:
         PLAYERS.pop(writer, None)
         who = f"@{p.fren_tag}" if p.fren_tag else p.name
+        if p.in_game:
+            event("part", f"{who} left the arcade")
         await broadcast_room(p.room, c(GREY, f"{who} fades from the arcade."))
         try:
             writer.close()
@@ -1897,23 +2322,41 @@ async def main() -> None:
     oracle = "local LLM" if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted pacbot fallback"
     SERVER = await asyncio.start_server(handle_client, MUD_HOST, MUD_PORT)
     ws_server = await asyncio.start_server(_ws_client, MUD_HOST, MUD_WS_PORT)
-    print(f"▓ Pac's Arcade · POKEMUD on {MUD_HOST}:{MUD_PORT}  [persisted via {backend} @ {store_where}, Oracle: {oracle}] 💜")
-    print(f"  Connect:  python services/mud/play.py    (or: telnet {MUD_HOST} {MUD_PORT})")
-    print(f"  In a browser:  http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/play   (WebSocket bridge on {MUD_HOST}:{MUD_WS_PORT})")
-    if LOCAL_SITE_URL:
-        print(f"  Local arcade site: {LOCAL_SITE_URL}")
     http_srv = _start_admin_http()
+
+    def row(label: str, value: str, vcol: str = "") -> str:
+        return c(MAG, "║ ") + c(GREY, f"{label:<13}") + (c(vcol, value) if vcol else value)
+
+    tok_note = "  (auto-generated; set PA_ADMIN_TOKEN to pin)" if ADMIN_TOKEN_GENERATED else ""
+    bar = c(MAG, "╠" + "═" * 66)
+    lines = [
+        c(MAG, "╔" + "═" * 66),
+        c(MAG, "║ ") + c(BOLD + GOLD, "PAC'S ARCADE · POKEMUD") + c(GREY, "  ·  Proof of Knowledge Engine  💜"),
+        c(MAG, "║ ") + c(GREY, "verse ") + c(BOLD + AMBER, WORLD)
+        + c(GREY, f"  ·  store {backend} @ {store_where}  ·  oracle: {oracle}"),
+        bar,
+        row("telnet", f"{MUD_HOST}:{MUD_PORT}", GREEN) + c(GREY, "   (python services/mud/play.py)"),
+        row("browser", f"http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/play", GREEN)
+        + c(GREY, f"   (ws bridge :{MUD_WS_PORT})"),
+        row("web console", f"http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/" if http_srv else "not running", CYAN),
+        row("admin token", ADMIN_TOKEN, BOLD + GOLD) + c(GREY, tok_note + f"   (in-MUD: 'admin {ADMIN_TOKEN}')"),
+        bar,
+        row("frens.earth", ("connected — " + FRENS_URL) if frens_aware() else "standalone", "")
+        + ("" if frens_aware() else c(GREY, "  (set PA_FRENS_URL to connect)")),
+        row("matrix chat", "ON" if CHAT_MATRIX else "off", GREEN if CHAT_MATRIX else GREY)
+        + ("" if CHAT_MATRIX else c(GREY, "  (enable:  chat on)")),
+    ]
+    if LOCAL_SITE_URL:
+        lines.append(row("arcade site", LOCAL_SITE_URL, CYAN))
+    lines += [
+        row("console", "type 'help' here for operator commands", ""),
+        c(MAG, "╚" + "═" * 66),
+    ]
+    print("\n".join(lines) if VT_TTY else "\n".join(_ANSI.sub("", ln) for ln in lines), flush=True)
+
     _start_console(LOOP)
     ticker = asyncio.create_task(_status_ticker())
     sampler = asyncio.create_task(_metrics_sampler())      # feeds the console's CPU/MEM/NET histograms
-    tok_note = "  (auto-generated; set PA_ADMIN_TOKEN to pin it)" if ADMIN_TOKEN_GENERATED else ""
-    print("  Operator console: type 'help' here.")
-    print(f"    admin token : {ADMIN_TOKEN}{tok_note}   (in-MUD: 'admin {ADMIN_TOKEN}')")
-    if http_srv:
-        print(f"    web console : http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/   "
-              "(open in a browser, paste the admin token)")
-    print(f"    frens.earth : {'connected — ' + FRENS_URL if frens_aware() else 'standalone (set PA_FRENS_URL to connect)'}")
-    print(f"    matrix chat : {'ON' if CHAT_MATRIX else 'off (default) — enable with  admin chat on'}")
 
     try:
         async with SERVER, ws_server:
@@ -1933,10 +2376,10 @@ async def main() -> None:
             pass
 
     if REBOOT:
-        print("▓ POKEMUD rebooting…")
+        print("\n▓ POKEMUD rebooting…")
         os.execv(sys.executable, [sys.executable] + sys.argv)
     else:
-        print("▓ POKEMUD is going offline. GG's, fren. 💜")
+        print("\n▓ POKEMUD is going offline. GG's, fren. 💜")
 
 
 if __name__ == "__main__":
