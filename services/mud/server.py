@@ -57,6 +57,12 @@ def frens_aware() -> bool:
 
 
 # --- persistence (shared with state-sync) ------------------------------------
+# Data files live next to the service, not the caller's cwd — the server behaves the
+# same whether launched from the repo root, services/mud, or a process manager.
+DATA_DIR = os.environ.get("PA_MUD_DATA_DIR",
+                          os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
+os.environ.setdefault("PA_GAMESTATE_SQLITE", os.path.join(DATA_DIR, "gamestate.dev.sqlite"))
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 import world_store  # noqa: E402
 import webbridge     # noqa: E402  (same dir as this file — the browser WebSocket bridge)
@@ -87,6 +93,35 @@ SHUTDOWN = asyncio.Event()
 HOME = "\x1b[H"                       # cursor to top-left (in-place redraw)
 CLEAR = "\x1b[2J\x1b[3J\x1b[H"        # full clear + scrollback, home
 RESIZE = "\x1b[8;42;112t"            # ask for 42x112 (honored by some terminals; resize freely)
+
+
+def _enable_vt() -> bool:
+    """Enable ANSI (virtual-terminal) processing for the SERVER's own console and report
+    whether stdout is an interactive TTY that can host the in-place status line."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
+        if not sys.stdout.isatty():
+            return False
+    except Exception:
+        return False
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-11)                       # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not k.GetConsoleMode(h, ctypes.byref(mode)):
+            return False
+        return bool(k.SetConsoleMode(h, mode.value | 0x0004))   # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        return False
+
+
+VT_TTY = _enable_vt()
 
 # --- ANSI 8-bit palette ------------------------------------------------------
 R = "\x1b[0m"
@@ -681,6 +716,7 @@ async def etch_class_rune(p: Player, spec: dict) -> None:
     old_level = p.level
     res = await asyncio.to_thread(STORE.add_xp, p.name, 100); p.xp, p.level = res["xp"], res["level"]
     p.pending_fx.append("etch")                        # cue the web client to glow/particle the etch
+    event("etch", f"{display_name(p)} etched {spec['rune']} (+100 xp)")
     await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.3)
     focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
     if p.level > old_level:
@@ -813,6 +849,47 @@ def _fmt_dur(secs: float) -> str:
     return (f"{h}h " if h else "") + f"{m:02d}m {s:02d}s"
 
 
+# --- console output: event feed + a single in-place status line ----------------
+# On a real TTY the status line REFRESHES in place (no 1-min scroll spam); events print
+# above it. Piped/service stdout falls back to change-only lines + a 5-min heartbeat.
+STATUS_EVERY = max(5, int(os.environ.get("PA_STATUS_EVERY", "60")))
+_EVENTS: deque = deque(maxlen=500)
+_EVENT_ID = 0
+_STATUS_TXT = ""
+EVENT_COLORS = {"join": GREEN, "part": GREY, "etch": GOLD, "levelup": GOLD,
+                "admin": CYAN, "warn": RED, "info": GREY}
+
+
+def cprint(line: str = "") -> None:
+    """Print a console line without clobbering the in-place status line."""
+    if VT_TTY and _STATUS_TXT:
+        sys.stdout.write("\r\x1b[K" + line + "\n" + _STATUS_TXT)
+    else:
+        sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
+
+def _draw_status(line: str) -> None:
+    global _STATUS_TXT
+    _STATUS_TXT = line
+    if VT_TTY:
+        sys.stdout.write("\r\x1b[K" + line)
+        sys.stdout.flush()
+
+
+def event(kind: str, msg: str) -> None:
+    """Record an operator-visible event (ring buffer → console + GET /events)."""
+    global _EVENT_ID
+    _EVENT_ID += 1
+    _EVENTS.append({"id": _EVENT_ID, "at": time.strftime("%H:%M:%S"), "kind": kind, "msg": msg})
+    cprint("  " + c(GREY, time.strftime("%H:%M:%S")) + " "
+           + c(EVENT_COLORS.get(kind, GREY), f"{kind:>7}") + c(GREY, " │ ") + msg)
+
+
+def events_since(since: int) -> dict:
+    return {"events": [e for e in _EVENTS if e["id"] > int(since)], "next": _EVENT_ID}
+
+
 _swarm_cache = {"at": 0.0, "data": None}
 
 
@@ -910,6 +987,7 @@ async def op_broadcast(msg: str) -> str:
             await show(pl)
         except Exception:
             pass
+    event("admin", f"broadcast: {msg[:80]}")
     return f"broadcast to {len(PLAYERS)} player(s)"
 
 
@@ -922,6 +1000,7 @@ async def op_kick(name: str) -> str:
             except Exception:
                 pass
             PLAYERS.pop(w, None)
+            event("admin", f"kicked {pl.name}")
             return f"kicked {pl.name}"
     return f"no player matching '{name}'"
 
@@ -930,6 +1009,7 @@ async def op_shutdown(reason: str = "maintenance", reboot: bool = False) -> str:
     global REBOOT
     REBOOT = reboot
     verb = "rebooting" if reboot else "shutting down"
+    event("admin", f"{verb} ({reason})")
     await op_broadcast(f"P.O.K.E. is {verb} now ({reason}). Progress saved — back soon, fren. 💜")
     await asyncio.sleep(0.3)
     SHUTDOWN.set()
@@ -963,7 +1043,8 @@ async def forward_chat_to_matrix(room: str, sender: str, body: str) -> None:
 
 CONSOLE_HELP = (
     "P.O.K.E. operator console:\n"
-    "  stats · who · nodes · broadcast <m> · kick <n> · chat on|off · reboot · shutdown · help"
+    "  stats · who · nodes · events · broadcast <m> · kick <n> · chat on|off\n"
+    "  ext <name> on|off · games · reboot · shutdown · help"
 )
 
 
@@ -973,25 +1054,36 @@ async def handle_console(cmd: str) -> None:
     if not verb:
         return
     if verb in ("help", "?"):
-        print(CONSOLE_HELP)
+        cprint(CONSOLE_HELP)
     elif verb in ("stats", "status"):
-        print(stats_report())
+        cprint(stats_report())
     elif verb == "who":
-        print(f"{len(PLAYERS)} online: " + ", ".join((f"@{p.fren_tag}" if p.fren_tag else p.name) for p in PLAYERS.values()))
+        cprint(f"{len(PLAYERS)} online: " + ", ".join((f"@{p.fren_tag}" if p.fren_tag else p.name) for p in PLAYERS.values()))
     elif verb in ("nodes", "swarm"):
-        print(nodes_report(await get_swarm_status(force=True)))
+        cprint(nodes_report(await get_swarm_status(force=True)))
+    elif verb in ("events", "log"):
+        for e in list(_EVENTS)[-15:]:
+            cprint(f"  {e['at']} {e['kind']:>7} │ {e['msg']}")
     elif verb in ("broadcast", "bcast", "say"):
-        print(await op_broadcast(rest) if rest else "usage: broadcast <message>")
+        cprint(await op_broadcast(rest) if rest else "usage: broadcast <message>")
     elif verb == "kick":
-        print(await op_kick(rest) if rest else "usage: kick <name>")
+        cprint(await op_kick(rest) if rest else "usage: kick <name>")
     elif verb == "chat":
-        print(set_chat_matrix(rest.lower() in ("on", "1", "true", "yes")))
+        cprint(set_chat_matrix(rest.lower() in ("on", "1", "true", "yes")))
+    elif verb == "ext":
+        name, _, state = rest.partition(" ")
+        cprint(extensions_set(name.strip(), state.strip().lower() in ("on", "1", "true", "yes"))
+               if name else "usage: ext <name> on|off   (extensions: " + ", ".join(_load_extensions()) + ")")
+    elif verb == "games":
+        cprint("\n".join(f"  {g['name']:<14} {g['kind']:<8} {g.get('url', '') or '—':<28} "
+                         f"{'ON' if g.get('enabled') else 'off'}{'  [builtin]' if g.get('builtin') else ''}"
+                         for g in _load_games()))
     elif verb == "reboot":
-        print(await op_shutdown("operator reboot", reboot=True))
+        cprint(await op_shutdown("operator reboot", reboot=True))
     elif verb == "shutdown":
-        print(await op_shutdown("operator shutdown", reboot=False))
+        cprint(await op_shutdown("operator shutdown", reboot=False))
     else:
-        print(f"unknown console command '{verb}' — type help")
+        cprint(f"unknown console command '{verb}' — type help")
 
 
 def _start_console(loop: asyncio.AbstractEventLoop) -> None:
@@ -1004,17 +1096,28 @@ def _start_console(loop: asyncio.AbstractEventLoop) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-async def _status_ticker(interval: int = 60) -> None:
+async def _status_ticker(interval: "int | None" = None) -> None:
+    """TTY: refresh ONE status line in place. Non-TTY: print only on change (+5-min heartbeat)."""
+    interval = interval or (STATUS_EVERY if VT_TTY else min(STATUS_EVERY, 60))
+    last_sig, last_print = None, 0.0
     while not SHUTDOWN.is_set():
+        sw = await get_swarm_status()
+        peers = sw.get("peers", sw.get("nodes", 0)) if sw.get("online") else "offline"
+        up = _fmt_dur(time.time() - SERVER_START)
+        if VT_TTY:
+            _draw_status(c(MAG, "▓ ") + c(BOLD + GREEN, f"{len(PLAYERS)} online")
+                         + c(GREY, " · swarm: ") + c(CYAN if sw.get("online") else GREY, str(peers))
+                         + c(GREY, f" · up {up} · ") + c(AMBER, WORLD)
+                         + c(GREY, " · type 'help' for console commands "))
+        else:
+            sig = (len(PLAYERS), str(peers))
+            if sig != last_sig or time.time() - last_print >= 300:
+                print(f"[status] {len(PLAYERS)} online · swarm nodes: {peers} · uptime {up}", flush=True)
+                last_sig, last_print = sig, time.time()
         try:
             await asyncio.wait_for(SHUTDOWN.wait(), timeout=interval)
         except asyncio.TimeoutError:
             pass
-        if SHUTDOWN.is_set():
-            break
-        sw = await get_swarm_status()
-        peers = sw.get("peers", sw.get("nodes", 0)) if sw.get("online") else "offline"
-        print(f"[status] {len(PLAYERS)} online · swarm nodes: {peers} · uptime {_fmt_dur(time.time() - SERVER_START)}")
 
 
 # --- HTTP control rails (serves the web-admin page + JSON API) ----------------
@@ -1029,6 +1132,15 @@ class _AdminHTTP(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
         tok = self.headers.get("X-POKE-Admin-Token", "")
         return bool(tok) and secrets.compare_digest(tok, ADMIN_TOKEN)
+
+    def _bot_blocked(self) -> bool:
+        """Server-owner bots identify with X-POKE-Bot; refuse them while their extension is off."""
+        bot = self.headers.get("X-POKE-Bot", "").strip()
+        if bot and not extension_enabled(bot):
+            self._reply(403, {"error": f"extension '{bot}' is disabled — the owner can enable it "
+                                       "in the node console (Extensions) or:  ext " + bot.lower() + " on"})
+            return True
+        return False
 
     def _reply(self, code: int, obj: dict) -> None:
         body = json.dumps(obj).encode()
@@ -1064,8 +1176,24 @@ class _AdminHTTP(BaseHTTPRequestHandler):
                                      "node": os.environ.get("PA_NODE_NAME", "a POKE node")})
         if not self._authed():
             return self._reply(401, {"error": "unauthorized"})
+        if self._bot_blocked():
+            return
         if path in ("/stats", "/health"):
             self._reply(200, stats_json())
+        elif path == "/events":
+            since = 0
+            if "?" in self.path:
+                for kv in self.path.split("?", 1)[1].split("&"):
+                    if kv.startswith("since="):
+                        try:
+                            since = int(kv.split("=")[1])
+                        except Exception:
+                            pass
+            self._reply(200, events_since(since))
+        elif path == "/games":
+            self._reply(200, {"games": _load_games()})
+        elif path == "/extensions":
+            self._reply(200, {"extensions": _load_extensions()})
         elif path == "/nodes":
             self._reply(200, self._run(get_swarm_status(True)))
         elif path == "/system":
@@ -1100,6 +1228,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._authed():
             return self._reply(401, {"error": "unauthorized"})
+        if self._bot_blocked():
+            return
         length = int(self.headers.get("Content-Length", 0) or 0)
         try:
             data = json.loads(self.rfile.read(length) or b"{}") if length else {}
@@ -1126,6 +1256,18 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"ok": True, "result": relays_remove(str(data.get("name", "")).strip())})
         elif path == "/relays/toggle":
             self._reply(200, {"ok": True, "result": relays_toggle(
+                str(data.get("name", "")).strip(), bool(data.get("enabled")))})
+        elif path == "/games":
+            self._reply(200, {"ok": True, "result": games_add(
+                str(data.get("name", "")).strip(), str(data.get("kind", "")).strip(),
+                str(data.get("url", "")).strip())})
+        elif path == "/games/remove":
+            self._reply(200, {"ok": True, "result": games_remove(str(data.get("name", "")).strip())})
+        elif path == "/games/toggle":
+            self._reply(200, {"ok": True, "result": games_toggle(
+                str(data.get("name", "")).strip(), bool(data.get("enabled")))})
+        elif path == "/extensions":
+            self._reply(200, {"ok": True, "result": extensions_set(
                 str(data.get("name", "")).strip(), bool(data.get("enabled")))})
         elif path == "/torrent":
             self._reply(200, {"ok": True, "result": torrent_control(
@@ -1503,7 +1645,7 @@ def system_metrics() -> dict:
     return {"available": False, "reason": "no metrics backend (pip install psutil)"}
 
 
-RELAYS_FILE = os.environ.get("PA_RELAYS_FILE", os.path.join("data", "relays.json"))
+RELAYS_FILE = os.environ.get("PA_RELAYS_FILE", os.path.join(DATA_DIR, "relays.json"))
 
 
 def _load_relays() -> list:
@@ -1542,6 +1684,92 @@ def relays_toggle(name: str, enabled: bool) -> str:
             r["enabled"] = bool(enabled)
     _save_relays(relays)
     return f"'{name}' {'enabled' if enabled else 'disabled'}"
+
+
+# --- linked games (other front-ends into this pokenode — Luanti lands here) ----
+GAMES_FILE = os.environ.get("PA_GAMES_FILE", os.path.join(DATA_DIR, "games.json"))
+_BUILTIN_GAMES = [{"name": "POKEMUD", "kind": "mud", "url": "/play", "status": "live",
+                   "enabled": True, "builtin": True}]
+
+
+def _load_games() -> list:
+    try:
+        with open(GAMES_FILE) as f:
+            extra = json.load(f).get("games", [])
+    except Exception:
+        extra = []
+    return list(_BUILTIN_GAMES) + [g for g in extra if not g.get("builtin")]
+
+
+def _save_games(games: list) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(GAMES_FILE)), exist_ok=True)
+    with open(GAMES_FILE, "w") as f:
+        json.dump({"games": [g for g in games if not g.get("builtin")]}, f, indent=2)
+
+
+def games_add(name: str, kind: str, url: str) -> str:
+    if not name:
+        return "need a game name"
+    if name.upper() in {g["name"].upper() for g in _BUILTIN_GAMES}:
+        return f"'{name}' is built in"
+    games = [g for g in _load_games() if g.get("name") != name]
+    games.append({"name": name, "kind": kind or "game", "url": url, "status": "linked",
+                  "enabled": True, "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    _save_games(games)
+    event("admin", f"linked game '{name}' ({kind or 'game'})")
+    return f"linked '{name}'"
+
+
+def games_remove(name: str) -> str:
+    _save_games([g for g in _load_games() if g.get("name") != name])
+    return f"unlinked '{name}'"
+
+
+def games_toggle(name: str, enabled: bool) -> str:
+    games = _load_games()
+    for g in games:
+        if g.get("name") == name and not g.get("builtin"):
+            g["enabled"] = bool(enabled)
+    _save_games(games)
+    return f"'{name}' {'enabled' if enabled else 'disabled'}"
+
+
+# --- extensions (owner-toggled add-ons; the pacBOT ops bot is the first) --------
+EXT_FILE = os.environ.get("PA_EXTENSIONS_FILE", os.path.join(DATA_DIR, "extensions.json"))
+_EXT_DEFAULTS = {
+    "pacbot": {"enabled": False,
+               "desc": "pacBOT ops bot — may read stats/events and act for the owner (see docs/BOT-EXTENSION.md)"},
+}
+
+
+def _load_extensions() -> dict:
+    ext = {k: dict(v) for k, v in _EXT_DEFAULTS.items()}
+    try:
+        with open(EXT_FILE) as f:
+            for k, v in json.load(f).get("extensions", {}).items():
+                ext.setdefault(k, {})["enabled"] = bool(v.get("enabled"))
+                if v.get("desc"):
+                    ext[k]["desc"] = v["desc"]
+    except Exception:
+        pass
+    return ext
+
+
+def extensions_set(name: str, enabled: bool) -> str:
+    name = name.lower().strip()
+    ext = _load_extensions()
+    if name not in ext:
+        return f"unknown extension '{name}' (have: {', '.join(ext)})"
+    ext[name]["enabled"] = bool(enabled)
+    os.makedirs(os.path.dirname(os.path.abspath(EXT_FILE)), exist_ok=True)
+    with open(EXT_FILE, "w") as f:
+        json.dump({"extensions": ext}, f, indent=2)
+    event("admin", f"extension '{name}' {'ON' if enabled else 'off'}")
+    return f"extension '{name}' {'ON' if enabled else 'off'}"
+
+
+def extension_enabled(name: str) -> bool:
+    return bool(_load_extensions().get(name.lower().strip(), {}).get("enabled"))
 
 
 def torrent_status() -> dict:
@@ -1694,6 +1922,7 @@ async def op_mute(name: str, on: bool, reason: str = "") -> str:
         await show(pl)
     except Exception:
         pass
+    event("admin", f"{pl.name} {'muted' if on else 'unmuted'}")
     return f"{pl.name} {'muted' if on else 'unmuted'}"
 
 
@@ -1708,6 +1937,7 @@ async def op_timeout(name: str, minutes: int, reason: str = "") -> str:
         await show(pl)
     except Exception:
         pass
+    event("admin", f"{pl.name} timed out {int(minutes)}m")
     return f"{pl.name} timed out {int(minutes)}m"
 
 
@@ -2043,6 +2273,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             ], AMBER)
             push(p, c(MAG, f"Welcome back, {hello}. Your progress was kept."))
         await broadcast_room(p.room, c(GREY, f"{hello} steps in from the street."), exclude=p)
+        event("join", f"{hello} stepped in ({'web' if web else 'terminal'})")
         await show(p)
 
         while not reader.at_eof():
@@ -2062,6 +2293,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     finally:
         PLAYERS.pop(writer, None)
         who = f"@{p.fren_tag}" if p.fren_tag else p.name
+        if p.in_game:
+            event("part", f"{who} left the arcade")
         await broadcast_room(p.room, c(GREY, f"{who} fades from the arcade."))
         try:
             writer.close()
@@ -2089,23 +2322,41 @@ async def main() -> None:
     oracle = "local LLM" if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted pacbot fallback"
     SERVER = await asyncio.start_server(handle_client, MUD_HOST, MUD_PORT)
     ws_server = await asyncio.start_server(_ws_client, MUD_HOST, MUD_WS_PORT)
-    print(f"▓ Pac's Arcade · POKEMUD on {MUD_HOST}:{MUD_PORT}  [persisted via {backend} @ {store_where}, Oracle: {oracle}] 💜")
-    print(f"  Connect:  python services/mud/play.py    (or: telnet {MUD_HOST} {MUD_PORT})")
-    print(f"  In a browser:  http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/play   (WebSocket bridge on {MUD_HOST}:{MUD_WS_PORT})")
-    if LOCAL_SITE_URL:
-        print(f"  Local arcade site: {LOCAL_SITE_URL}")
     http_srv = _start_admin_http()
+
+    def row(label: str, value: str, vcol: str = "") -> str:
+        return c(MAG, "║ ") + c(GREY, f"{label:<13}") + (c(vcol, value) if vcol else value)
+
+    tok_note = "  (auto-generated; set PA_ADMIN_TOKEN to pin)" if ADMIN_TOKEN_GENERATED else ""
+    bar = c(MAG, "╠" + "═" * 66)
+    lines = [
+        c(MAG, "╔" + "═" * 66),
+        c(MAG, "║ ") + c(BOLD + GOLD, "PAC'S ARCADE · POKEMUD") + c(GREY, "  ·  Proof of Knowledge Engine  💜"),
+        c(MAG, "║ ") + c(GREY, "verse ") + c(BOLD + AMBER, WORLD)
+        + c(GREY, f"  ·  store {backend} @ {store_where}  ·  oracle: {oracle}"),
+        bar,
+        row("telnet", f"{MUD_HOST}:{MUD_PORT}", GREEN) + c(GREY, "   (python services/mud/play.py)"),
+        row("browser", f"http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/play", GREEN)
+        + c(GREY, f"   (ws bridge :{MUD_WS_PORT})"),
+        row("web console", f"http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/" if http_srv else "not running", CYAN),
+        row("admin token", ADMIN_TOKEN, BOLD + GOLD) + c(GREY, tok_note + f"   (in-MUD: 'admin {ADMIN_TOKEN}')"),
+        bar,
+        row("frens.earth", ("connected — " + FRENS_URL) if frens_aware() else "standalone", "")
+        + ("" if frens_aware() else c(GREY, "  (set PA_FRENS_URL to connect)")),
+        row("matrix chat", "ON" if CHAT_MATRIX else "off", GREEN if CHAT_MATRIX else GREY)
+        + ("" if CHAT_MATRIX else c(GREY, "  (enable:  chat on)")),
+    ]
+    if LOCAL_SITE_URL:
+        lines.append(row("arcade site", LOCAL_SITE_URL, CYAN))
+    lines += [
+        row("console", "type 'help' here for operator commands", ""),
+        c(MAG, "╚" + "═" * 66),
+    ]
+    print("\n".join(lines) if VT_TTY else "\n".join(_ANSI.sub("", ln) for ln in lines), flush=True)
+
     _start_console(LOOP)
     ticker = asyncio.create_task(_status_ticker())
     sampler = asyncio.create_task(_metrics_sampler())      # feeds the console's CPU/MEM/NET histograms
-    tok_note = "  (auto-generated; set PA_ADMIN_TOKEN to pin it)" if ADMIN_TOKEN_GENERATED else ""
-    print("  Operator console: type 'help' here.")
-    print(f"    admin token : {ADMIN_TOKEN}{tok_note}   (in-MUD: 'admin {ADMIN_TOKEN}')")
-    if http_srv:
-        print(f"    web console : http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/   "
-              "(open in a browser, paste the admin token)")
-    print(f"    frens.earth : {'connected — ' + FRENS_URL if frens_aware() else 'standalone (set PA_FRENS_URL to connect)'}")
-    print(f"    matrix chat : {'ON' if CHAT_MATRIX else 'off (default) — enable with  admin chat on'}")
 
     try:
         async with SERVER, ws_server:
@@ -2125,10 +2376,10 @@ async def main() -> None:
             pass
 
     if REBOOT:
-        print("▓ POKEMUD rebooting…")
+        print("\n▓ POKEMUD rebooting…")
         os.execv(sys.executable, [sys.executable] + sys.argv)
     else:
-        print("▓ POKEMUD is going offline. GG's, fren. 💜")
+        print("\n▓ POKEMUD is going offline. GG's, fren. 💜")
 
 
 if __name__ == "__main__":
