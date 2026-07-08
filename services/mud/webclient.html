@@ -65,9 +65,16 @@
   /* ---- game ---- */
   #game{flex:1;display:none;flex-direction:column;gap:.5rem}
   #game.show{display:flex}
-  .hud{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;font-size:.85rem;color:var(--dim)}
-  .hud b{color:var(--gold)} .chip{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:.15rem .6rem}
+  .hud{display:flex;flex-wrap:nowrap;gap:.5rem;align-items:center;font-size:.85rem;color:var(--dim);min-width:0}
+  .hud b{color:var(--gold)} .chip{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:.15rem .6rem;white-space:nowrap}
+  .hud .who{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:right}
   .bar{display:inline-block;width:90px;height:.5rem;background:#141a28;border-radius:5px;overflow:hidden;vertical-align:middle}
+  @media (max-width:640px){
+    .hud{font-size:.75rem;gap:.3rem}
+    .hud .chip{padding:.15rem .4rem}
+    .bar{width:36px}
+    .xplbl,.hud .rank{display:none}
+  }
   .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--green))}
   .energy>i{background:linear-gradient(90deg,#ff7a5a,var(--green))}
   .panel{position:relative;border:1px solid var(--accent);border-radius:12px;background:linear-gradient(#0a0e17,#070a11);
@@ -250,11 +257,11 @@
     document.documentElement.style.setProperty('--accent', accent);
     const h=m.hud||{};
     $('hud').innerHTML =
-      `<span class="chip">Lv <b>${h.level??1}</b>${h.rank?` <span style="color:var(--amber)">${escapeHtml(h.rank)}</span>`:''}</span>`+
-      `<span class="chip">✦ ${h.xp??0} xp <span class="bar"><i style="width:${(h.xp_into??0)}%"></i></span></span>`+
+      `<span class="chip">Lv <b>${h.level??1}</b>${h.rank?` <span class="rank" style="color:var(--amber)">${escapeHtml(h.rank)}</span>`:''}</span>`+
+      `<span class="chip">✦ ${h.xp??0}<span class="xplbl"> xp</span> <span class="bar"><i style="width:${(h.xp_into??0)}%"></i></span></span>`+
       `<span class="chip">🎓 <b>${h.runes??0}</b></span>`+
       `<span class="chip energy">⚡ <span class="bar"><i style="width:${(h.energy??100)}%"></i></span></span>`+
-      `<span class="spacer"></span><span class="chip">${m.who||''} · ${m.room||''}</span>`;
+      `<span class="chip who">${escapeHtml(m.who||'')} · ${escapeHtml(m.room||'')}</span>`;
     $('ptitle').textContent = m.title||m.room||'';
     // real ordinal/rune media when the node allows it (terminals always get the ASCII rendition)
     const md = m.media;
