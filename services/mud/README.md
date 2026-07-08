@@ -13,11 +13,22 @@ carries transient lines (says, arrivals, operator notices). Special effects (bos
 rune-etch) redraw the frame frame-by-frame. Every command that touches the world (`pull lever`,
 `look`) mutates DB-2 via **state-sync** — the MUD never owns world state.
 
-In-game commands include: movement + `look`, `talk oracle` / `answer` / `ask oracle`, `challenge`
-(the boss in the dungeon, `down` from the entrance), `pull lever`, `stats` (your attributes) /
-`examine <name>` (another fren), `link fren|nostr|space` + `verify <code>`, `backup` (anchor
-progress on-chain), `profile`, `certs`, `inventory`, `say`, `who`, `help`. Players have **attributes**
-(level, knowledge XP, runes, energy) shown in the window HUD; XP comes from the Oracle and bosses.
+In-game commands include: movement + `look`, `talk <npc>` / `answer` / `ask <npc> <q>`, `challenge`
+(the verse's boss), `pull lever`, `stats` / `examine <name>`, `link fren|nostr|space` +
+`verify <code>`, `backup`, `profile`, `certs`, `inventory`, `say`, `who`, `help` — plus the
+**home-room** set: `home` (your own room), `rename room <name>`, `invite <fren>` / `visit <fren>`,
+and `gallery` / `view <n>` (the art on display). Players have **attributes** (level + verse rank,
+knowledge XP, runes, energy) shown in the window HUD; XP comes from teachers and bosses.
+
+## Verses
+
+The world itself is a **verse pack** — rooms, NPC personas (run by the node's local AI with
+per-player memory), trials/bosses, ranks, strings, and gallery art as pure data under
+[`verses/`](verses/). `PA_VERSE` selects (`pacsarcade` default; `frens-hub` is the starship
+hub skeleton — Ensign to Server Admiral). Scaffold your own with
+`python services/mud/new_verse.py <id> --name "…"` and see
+[`docs/VERSE-GUIDE.md`](../../docs/VERSE-GUIDE.md) for the full walkthrough, including
+pacBOT's "imagine a verse" interview and docking your verse to the main hub.
 
 **You don't have to be exact.** A **fast path** runs known commands instantly (zero LLM, zero lag);
 anything unrecognized (or free chat with an NPC) takes the **fuzzy path** — heuristics first, then the
@@ -91,14 +102,19 @@ In production the MUD reaches `state-sync` at `http://state-sync:8082`; dev mode
 
 The MUD is a node an operator runs, not a black box. One set of actions, three ways to drive it:
 
-- **Local stdin** — type commands in the terminal running `server.py`.
+- **Local stdin** — type commands in the terminal running `server.py`. On a real TTY the
+  status line **refreshes in place** (no scroll spam; `PA_STATUS_EVERY` tunes it) and events
+  (joins, etches, admin actions) print above it. Commands: `stats · who · nodes · events ·
+  broadcast · kick · chat on|off · art ascii|media · ext <name> on|off · games · reboot · shutdown`.
 - **In-MUD** — `admin <token>` elevates a player (token auto-generated + printed at startup, or set
   `PA_ADMIN_TOKEN`), then `stats`, `nodes`, `broadcast`, `kick`, `reboot`, `shutdown`.
 - **Web console** — open `http://127.0.0.1:4001/` in a browser: a self-contained arcade dashboard
-  ([`admin.html`](admin.html)) with labeled widgets (node, players, knowledge-swarm, controls). The
-  page loads without a token; paste the admin token once and it's stored locally and sent on every
-  API call. Backed by the localhost HTTP rails (`X-POKE-Admin-Token` auth): `GET /stats /nodes`,
-  `POST /broadcast /kick /chat /reboot /shutdown`.
+  ([`admin.html`](admin.html)) with a **live console feed** (`GET /events`), players + moderation,
+  knowledge-source toggles, an **Extensions** rail (the pacBOT ops bot — off by default, see
+  [`docs/BOT-EXTENSION.md`](../../docs/BOT-EXTENSION.md)) and a **Linked Games** registry
+  (`GET/POST /games`) where other front-ends (the Luanti voxel verse later) dock onto the node.
+  The page loads without a token; paste the admin token once and it's stored locally and sent on
+  every API call (`X-POKE-Admin-Token`).
 
 What it surfaces:
 - **stats** — logged-in players (name/@fren, room, uptime, idle), node uptime, runes etched this
