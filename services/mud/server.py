@@ -278,38 +278,47 @@ C64_LINES = [
 ]
 
 
-def make_banner(accent: str = BOLD + GOLD) -> str:
-    """The login banner. `accent` colors the POKEMUD logo — cycled to make it glimmer."""
+SUBTITLE = "Proof of Knowledge Engine - Multi User Dungeon"
+_COIN_ROW = "\x00coin\x00"                       # placeholder swapped for the blinking coin
+
+
+def make_banner(accent: str = BOLD + GOLD, coin: str = "", coin_col: str = "") -> str:
+    """The attract banner. `accent` colors the POKEMUD logo (cycled to glimmer);
+    `coin` renders centered on the INSERT COIN row inside the box."""
     verse_name = VERSE["name"].upper()
-    tagline = VERSE.get("tagline", "Proof of Knowledge Engine")
     lines = [
         "",
         verse_name,
         "presents",
         "",
         *LOGO,
-        "· multi user dungeon ·",
+        SUBTITLE,
         "",
-        tagline,
-        "",
-        "type  help  for the controls   ·   type  quit  to leave",
+        _COIN_ROW,
         "",
     ]
-    width = max(dwidth(l) for l in lines) + 8
+    width = max(dwidth(l) for l in lines if l != _COIN_ROW) + 8
     out = [c(MAG, "╔" + "═" * width + "╗")]
     for ln in lines:
-        if ln in LOGO:
-            col = accent
+        if ln == _COIN_ROW:
+            txt, col = coin, (coin_col or BOLD + GOLD)
+        elif ln in LOGO:
+            txt, col = ln, accent
         elif ln == verse_name:
-            col = BOLD + AMBER
-        elif ln == tagline:
-            col = AMBER
+            txt, col = ln, BOLD + AMBER
+        elif ln == SUBTITLE:
+            txt, col = ln, AMBER
         else:
-            col = GREY
-        pad = width - dwidth(ln)
-        out.append(c(MAG, "║") + c(col, " " * (pad // 2) + ln + " " * (pad - pad // 2)) + c(MAG, "║"))
+            txt, col = ln, GREY
+        pad = width - dwidth(txt)
+        out.append(c(MAG, "║") + c(col, " " * (pad // 2) + txt + " " * (pad - pad // 2)) + c(MAG, "║"))
     out.append(c(MAG, "╚" + "═" * width + "╝"))
-    return "\n" + "\n".join(out) + "\n" + c(GREY, "  a study buddy for your cyberdeck  ·  frens welcome. 💜") + "\n"
+    return "\n" + "\n".join(out) + "\n"
+
+
+def banner_width() -> int:
+    lines = ["", VERSE["name"].upper(), "presents", "", *LOGO, SUBTITLE, "", ""]
+    return max(dwidth(l) for l in lines) + 8
 
 
 BANNER = make_banner()
@@ -2522,17 +2531,34 @@ async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None"
             break
         await p.send(CLEAR + make_banner(col))
         await pause(0.16)
-    if skipped:
-        await p.send(CLEAR + make_banner())
-    # INSERT COIN — the attract screen HOLDS here, blinking, until the fren acts.
-    # ENTER (or typing 'insert coin' / a name) advances; ~3 min failsafe for idle sockets.
-    blinks = 0
-    while not skipped and blinks < 360:
-        coin = c(BOLD + GOLD, "▶ INSERT COIN ◀") if blinks % 2 == 0 else c(GREY, "  INSERT COIN  ")
-        await p.send("\r" + " " * 10 + coin + c(GREY, "   — ENTER or type RUN, fren") + "\x1b[K")
-        await pause(0.5)
-        blinks += 1
-    await p.send("\r\x1b[K")
+    # INSERT COIN — the attract screen HOLDS here: the coin blinks INSIDE the box while
+    # hints slide across the bottom of the window. ENTER / 'run' / 'insert coin' advances;
+    # ~3 min failsafe for idle sockets.
+    msgs = [
+        "a study buddy for your cyberdeck",
+        "type  /help  for the controls",
+        "type  /quit  to leave",
+        VERSE.get("tagline", ""),
+        "frens welcome 💜",
+    ]
+    reel = "   ···   ".join(m for m in msgs if m) + "   ···   "
+    reel_w = banner_width() - 2
+    tick = 0
+    if skipped:                                       # typed through the boot: still show the marquee screen once
+        await p.send(CLEAR + make_banner(coin="▶ INSERT COIN ◀") + "  " + c(GREY, reel[:reel_w]) + "\r\n")
+        return pre
+    await p.send(CLEAR)
+    while not skipped and tick < 720:
+        blink_on = tick % 4 < 2
+        coin = "▶ INSERT COIN ◀" if blink_on else "▷ INSERT COIN ◁"
+        coin_col = (BOLD + GOLD) if blink_on else GREY
+        off = (tick * 2) % len(reel)
+        window = (reel + reel)[off:off + reel_w]
+        await p.send(HOME + make_banner(coin=coin, coin_col=coin_col)
+                     + "  " + c(GREY, window) + "\x1b[K")
+        await pause(0.25)
+        tick += 1
+    await p.send("\x1b[J")
     return pre
 
 
