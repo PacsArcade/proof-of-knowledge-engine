@@ -468,8 +468,6 @@ def _wrap(text: str, width: int) -> list[str]:
 def focus_room(p: Player) -> None:
     room = get_room(p.room)
     lines: list[str] = []
-    if room.get("art"):
-        lines += center_block(room["art"]) + [""]
     lines += _wrap(room["desc"], BOARD_W - 4)
     lines.append("")
     if room.get("home_of"):                    # a player's own room: their showcase
@@ -483,7 +481,7 @@ def focus_room(p: Player) -> None:
         lines.append("Also here: " + ", ".join(others))
     lines.append("")
     lines.append(exits_line(room))    # same glyphs as the arrows on the frame border
-    p.focus = {"title": room["title"], "lines": lines, "color": GREEN}
+    focus_text(p, room["title"], lines, GREEN, art=room.get("art"))
 
 
 def _home_showcase(owner: str, viewer: "Player") -> list[str]:
@@ -505,8 +503,11 @@ def _home_showcase(owner: str, viewer: "Player") -> list[str]:
 
 
 def focus_text(p: Player, title: str, lines: list[str], color: str = GREEN,
-               media: "dict | None" = None) -> None:
-    p.focus = {"title": title, "lines": list(lines), "color": color, "media": media}
+               media: "dict | None" = None, art: "list[str] | None" = None) -> None:
+    """`art` is a block that must never re-wrap: terminals center it in the frame,
+    the web client renders it as its own no-wrap block (so walls survive mobile)."""
+    p.focus = {"title": title, "lines": list(lines), "color": color, "media": media,
+               "art": list(art) if art else []}
 
 
 def push(p: Player, line: str) -> None:
@@ -589,7 +590,9 @@ def render_screen(p: Player) -> str:
     hud = ("  " + c(GOLD, f"⭐ Lv {p.level}") + (c(AMBER, f" {rank}") if rank else "")
            + c(GREY, " · ") + c(CYAN, f"✦ {p.xp} xp")
            + c(GREY, " · ") + c(GOLD, f"🎓 {len(p.certs)}") + c(GREY, " · ") + c(GREEN, f"⚡ {p.energy}"))
-    frame = _frame(f["title"], f["lines"], room["exits"], f.get("color", GREEN))
+    art = f.get("art") or []
+    body = (center_block(art) + [""] if art else []) + f["lines"]
+    frame = _frame(f["title"], body, room["exits"], f.get("color", GREEN))
     log = list(p.log)[-LOG_H:]
     log = [""] * (LOG_H - len(log)) + log            # bottom-align the log
     # Crop every free-form row to the window width — a line that hard-wraps in the
@@ -638,6 +641,7 @@ def screen_model(p: "Player") -> dict:
                 "rank": verses.rank_for(VERSE, p.level)},
         "title": f.get("title") or room["title"],
         "color": _color_name(f.get("color", GREEN)),
+        "art": [_plain(l) for l in (f.get("art") or [])],   # no-wrap block; client centers it
         "body": [_plain(l) for l in f.get("lines", [])],
         # Real ordinal/rune media for capable clients — unless the node forces ASCII.
         "media": (f.get("media") if ART_MODE == "media" else None),
@@ -683,9 +687,9 @@ def center_block(lines: list[str]) -> list[str]:
 
 async def animate(p: Player, frames: list[list[str]], title: str, color: str = GOLD, hold: float = 0.5) -> None:
     """Play ASCII frames inside the window — the primitive bosses & lesson effects use.
-    Frames are centered in the frame so encounters own the stage, not the left edge."""
+    Frames ride the art channel: centered on terminals, never re-wrapped on the web."""
     for frame in frames:
-        focus_text(p, title, center_block(frame), color)
+        focus_text(p, title, [], color, art=frame)
         await show(p)
         await asyncio.sleep(hold)
 
@@ -1657,12 +1661,12 @@ async def view_piece(p: Player, which: str) -> None:
         piece = GALLERY[int(which.strip()) - 1]
     except (ValueError, IndexError):
         push(p, c(GREY, "view which? try  gallery  for the list")); return
-    lines = [""] + center_block(piece.get("art", ["(no ascii rendition)"]))
-    caption = f"'{piece['title']}' — {piece.get('artist', 'unknown')}"
-    lines += ["", " " * max(0, (BOARD_W - 2 - dwidth(caption)) // 2) + caption]
+    art = list(piece.get("art", ["(no ascii rendition)"]))
+    art += ["", f"'{piece['title']}' — {piece.get('artist', 'unknown')}"]
+    lines = []
     if piece.get("media") and ART_MODE != "media":
         lines.append("  (full media is off on this node — ascii mode)")
-    focus_text(p, piece["title"], lines, AMBER, media=piece.get("media"))
+    focus_text(p, piece["title"], lines, AMBER, media=piece.get("media"), art=art)
 
 
 # =============================================================================
