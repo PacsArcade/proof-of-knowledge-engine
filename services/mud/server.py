@@ -297,7 +297,7 @@ def make_banner(accent: str = BOLD + GOLD) -> str:
         pad = width - dwidth(ln)
         out.append(c(MAG, "║") + c(col, " " * (pad // 2) + ln + " " * (pad - pad // 2)) + c(MAG, "║"))
     out.append(c(MAG, "╚" + "═" * width + "╝"))
-    return "\n" + "\n".join(out) + "\n" + c(GREY, "  a study buddy for your cyberdeck  ·  welcome, fren. 💜") + "\n"
+    return "\n" + "\n".join(out) + "\n" + c(GREY, "  a study buddy for your cyberdeck  ·  frens welcome. 💜") + "\n"
 
 
 BANNER = make_banner()
@@ -867,16 +867,22 @@ async def backup_onchain(p: Player) -> None:
 
 
 async def show_profile(p: Player) -> None:
-    focus_text(p, ("@" + p.fren_tag) if p.fren_tag else p.name, [
+    # Standalone nodes can't check a claim against frens.earth — identity links are the
+    # player's OWN claim until the node syncs with the hub, and we say so honestly.
+    unv = "" if frens_aware() else "  (claimed — verifies via frens.earth)"
+    lines = [
         "",
         "  Character : " + p.name,
         "  Wallet    : " + (p.wallet or "—"),
-        "  @fren     : " + (("@" + p.fren_tag) if p.fren_tag else "unlinked   (link fren <name>)"),
-        "  nostr     : " + (p.nostr or "unlinked   (link nostr <npub1…>)"),
-        "  space     : " + (p.space or "unlinked   (link space <@name>)"),
+        "  @fren     : " + ((("@" + p.fren_tag) + unv) if p.fren_tag else "unlinked   (link fren <name>)"),
+        "  nostr     : " + ((p.nostr + unv) if p.nostr else "unlinked   (link nostr <npub1…>)"),
+        "  space     : " + ((p.space + unv) if p.space else "unlinked   (link space <@name>)"),
         "  Runes     : " + f"{len(p.certs)} soulbound class rune(s)",
         "  Backup    : " + ("run  backup  to anchor on-chain"),
-    ], AMBER)
+    ]
+    if not frens_aware():
+        lines.append("  This node is standalone — links confirm when it joins frens.earth.")
+    focus_text(p, ("@" + p.fren_tag) if p.fren_tag else p.name, lines, AMBER)
 
 
 async def show_certs(p: Player) -> None:
@@ -2440,7 +2446,8 @@ async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None"
             skipped = True
             return
         line = clean_line(raw)
-        if line:
+        # 'insert coin' / 'coin' / 'start' mean "let me in", not "call me that"
+        if line and line.lower() not in ("insert coin", "coin", "start", "play"):
             pre = line
         skipped = True
 
@@ -2458,12 +2465,14 @@ async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None"
         await pause(0.16)
     if skipped:
         await p.send(CLEAR + make_banner())
-    for i in range(4):                                # INSERT COIN blink
-        if skipped:
-            break
-        coin = c(BOLD + GOLD, "▶ INSERT COIN ◀") if i % 2 == 0 else c(GREY, "  INSERT COIN  ")
-        await p.send("\r" + " " * 14 + coin + "\x1b[K")
-        await pause(0.4)
+    # INSERT COIN — the attract screen HOLDS here, blinking, until the fren acts.
+    # ENTER (or typing 'insert coin' / a name) advances; ~3 min failsafe for idle sockets.
+    blinks = 0
+    while not skipped and blinks < 360:
+        coin = c(BOLD + GOLD, "▶ INSERT COIN ◀") if blinks % 2 == 0 else c(GREY, "  INSERT COIN  ")
+        await p.send("\r" + " " * 10 + coin + c(GREY, "   — press ENTER, fren") + "\x1b[K")
+        await pause(0.5)
+        blinks += 1
     await p.send("\r\x1b[K")
     return pre
 
@@ -2626,37 +2635,52 @@ async def main() -> None:
         return
     http_srv = _start_admin_http()
 
-    def row(label: str, value: str, vcol: str = "") -> str:
-        return c(MAG, "║ ") + c(GREY, f"{label:<13}") + (c(vcol, value) if vcol else value)
+    # --- the startup box: CLOSED borders, every row cropped + padded to one width ---
+    BW = 78                       # outer width
+    IN = BW - 4                   # inner content width
 
-    tok_note = "  (auto-generated; set PA_ADMIN_TOKEN to pin)" if ADMIN_TOKEN_GENERATED else ""
-    bar = c(MAG, "╠" + "═" * 66)
+    def crow(content: str) -> str:
+        cropped = ansi_crop(content, IN)
+        pad = " " * max(0, IN - dwidth(_ANSI.sub("", cropped)))
+        return c(MAG, "║ ") + cropped + pad + c(MAG, " ║")
+
+    def row(label: str, value: str, vcol: str = "", note: str = "") -> str:
+        return crow(c(GREY, f"{label:<13}") + (c(vcol, value) if vcol else value)
+                    + (c(GREY, note) if note else ""))
+
+    store_disp = str(store_where)
+    if len(store_disp) > IN - 22:                 # long path: keep the tail that matters
+        store_disp = "…" + store_disp[-(IN - 23):]
+    tok_note = "  (set PA_ADMIN_TOKEN to pin)" if ADMIN_TOKEN_GENERATED else ""
+    top = c(MAG, "╔" + "═" * (BW - 2) + "╗")
+    bar = c(MAG, "╠" + "═" * (BW - 2) + "╣")
+    bot = c(MAG, "╚" + "═" * (BW - 2) + "╝")
     lines = [
-        c(MAG, "╔" + "═" * 66),
-        c(MAG, "║ ") + c(BOLD + GOLD, "PAC'S ARCADE · POKEMUD") + c(GREY, "  ·  Proof of Knowledge Engine  💜"),
-        c(MAG, "║ ") + c(GREY, "verse ") + c(BOLD + AMBER, WORLD)
-        + c(GREY, f"  ·  store {backend} @ {store_where}  ·  oracle: {oracle}"),
+        top,
+        crow(c(BOLD + GOLD, "PAC'S ARCADE · POKEMUD") + c(GREY, "  ·  Proof of Knowledge Engine  💜")),
+        crow(c(GREY, "verse ") + c(BOLD + AMBER, WORLD) + c(GREY, "  ·  oracle: " + oracle)),
         bar,
-        row("telnet", f"{MUD_HOST}:{MUD_PORT}", GREEN) + c(GREY, "   (python services/mud/play.py)"),
-        row("browser", f"http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/play", GREEN)
-        + c(GREY, f"   (ws bridge :{MUD_WS_PORT})"),
+        row("telnet", f"{MUD_HOST}:{MUD_PORT}", GREEN, "   (python services/mud/play.py)"),
+        row("browser", f"http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/play", GREEN,
+            f"   (ws bridge :{MUD_WS_PORT})"),
         row("web console", f"http://{ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT}/" if http_srv else "not running", CYAN),
-        row("admin token", ADMIN_TOKEN, BOLD + GOLD) + c(GREY, tok_note + f"   (in-MUD: 'admin {ADMIN_TOKEN}')"),
+        row("admin token", ADMIN_TOKEN, BOLD + GOLD, f"   (in-MUD: 'admin {ADMIN_TOKEN}')" + tok_note),
         bar,
-        row("frens.earth", ("connected — " + FRENS_URL) if frens_aware() else "standalone", "")
-        + ("" if frens_aware() else c(GREY, "  (set PA_FRENS_URL to connect)")),
-        row("game chat", "ON" if GAME_CHAT else "OFF", GREEN if GAME_CHAT else RED)
-        + c(GREY, "   (chat on|off · chat block <@tag>)"),
-        row("matrix chat", "ON" if CHAT_MATRIX else "off", GREEN if CHAT_MATRIX else GREY)
-        + ("" if CHAT_MATRIX else c(GREY, "  (enable:  chat matrix on)")),
-        row("demo mode", "ON — practice runes only" if DEMO_MODE else "off", GOLD if DEMO_MODE else GREY)
-        + ("" if not DEMO_MODE else c(GREY, "  (set PA_DEMO_MODE=off after audit)")),
+        row("store", f"{backend} @ {store_disp}"),
+        row("frens.earth", ("connected — " + FRENS_URL) if frens_aware() else "standalone", "",
+            "" if frens_aware() else "  (set PA_FRENS_URL to connect)"),
+        row("game chat", "ON" if GAME_CHAT else "OFF", GREEN if GAME_CHAT else RED,
+            "   (chat on|off · chat block <@tag>)"),
+        row("matrix chat", "ON" if CHAT_MATRIX else "off", GREEN if CHAT_MATRIX else GREY,
+            "" if CHAT_MATRIX else "  (enable:  chat matrix on)"),
+        row("demo mode", "ON — practice runes only" if DEMO_MODE else "off", GOLD if DEMO_MODE else GREY,
+            "  (PA_DEMO_MODE=off after audit)" if DEMO_MODE else ""),
     ]
     if LOCAL_SITE_URL:
         lines.append(row("arcade site", LOCAL_SITE_URL, CYAN))
     lines += [
-        row("console", "type 'help' here for operator commands", ""),
-        c(MAG, "╚" + "═" * 66),
+        row("console", "type 'help' here for operator commands"),
+        bot,
     ]
     print("\n".join(lines) if VT_TTY else "\n".join(_ANSI.sub("", ln) for ln in lines), flush=True)
 
