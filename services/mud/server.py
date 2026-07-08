@@ -66,6 +66,21 @@ os.environ.setdefault("PA_GAMESTATE_SQLITE", os.path.join(DATA_DIR, "gamestate.d
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 import world_store  # noqa: E402
 import webbridge     # noqa: E402  (same dir as this file — the browser WebSocket bridge)
+import verses        # noqa: E402  (data-driven verse packs — rooms, NPCs, strings, gallery)
+
+# --- the verse this node hosts (PA_VERSE selects; see services/mud/verses/) ---
+VERSE = verses.load()
+ROOMS = VERSE["rooms"]
+NPCS = VERSE["npcs"]
+GALLERY = VERSE.get("gallery", [])
+VSTR = VERSE["strings"]
+if not (os.environ.get("PA_SPACE") or os.environ.get("PA_NODE_NAME")):
+    WORLD = VERSE["name"]
+# Art showcase mode: 'media' lets capable clients (web) render real ordinal/rune
+# images & video; 'ascii' forces the ASCII rendition everywhere. Console: art ascii|media
+ART_MODE = os.environ.get("PA_ART_MODE", "media").strip().lower()
+if ART_MODE not in ("media", "ascii"):
+    ART_MODE = "media"
 
 try:
     STORE = world_store.open_store()
@@ -83,6 +98,12 @@ ADMIN_HTTP_HOST = os.environ.get("PA_MUD_ADMIN_HOST", "127.0.0.1")
 ADMIN_HTTP_PORT = int(os.environ.get("PA_MUD_ADMIN_PORT", "4001"))
 CHAT_MATRIX = os.environ.get("PA_CHAT_MATRIX", "off").lower() in ("1", "true", "on", "yes")
 MATRIX_BRIDGE_URL = os.environ.get("PA_MATRIX_BRIDGE_URL", "http://matrix-bridge:8084")
+# Game chat (in-room `say` + any bridge): ON by default; operators can kill it globally,
+# restrict specific @tags, and every player can mute it for themselves ('chat off').
+GAME_CHAT = os.environ.get("PA_GAME_CHAT", "on").lower() not in ("0", "off", "false", "no")
+# DEMO MODE: on by default until the courses are audited — runes etched are PRACTICE
+# runes, clearly labeled, never presented as real credentials.
+DEMO_MODE = os.environ.get("PA_DEMO_MODE", "on").lower() not in ("0", "off", "false", "no")
 
 SERVER = None
 LOOP = None
@@ -222,6 +243,8 @@ def dir_to(src: str, dst: str) -> "str | None":
 
 def hint_to(src: str, dst: str, label: str) -> str:
     """'the Oracle is ▲ north of here' — or 'right here' when you've arrived."""
+    if src.startswith("home:"):                   # every home room opens south onto the floor
+        return f"{label} is ▼ south of here, back on the floor"
     d = dir_to(src, dst)
     if d is None:
         return f"{label} is right here"
@@ -246,14 +269,16 @@ BOOT_LINES = [
 
 def make_banner(accent: str = BOLD + GOLD) -> str:
     """The login banner. `accent` colors the POKEMUD logo — cycled to make it glimmer."""
+    verse_name = VERSE["name"].upper()
+    tagline = VERSE.get("tagline", "Proof of Knowledge Engine")
     lines = [
         "",
-        "PAC'S  ARCADE",
+        verse_name,
         "presents",
         "",
         *LOGO,
         "",
-        "Proof of Knowledge Engine",
+        tagline,
         "",
         "type  help  for the controls   ·   type  quit  to leave",
         "",
@@ -263,9 +288,9 @@ def make_banner(accent: str = BOLD + GOLD) -> str:
     for ln in lines:
         if ln in LOGO:
             col = accent
-        elif "PAC'S" in ln:
+        elif ln == verse_name:
             col = BOLD + AMBER
-        elif "Proof of Knowledge" in ln:
+        elif ln == tagline:
             col = AMBER
         else:
             col = GREY
@@ -282,94 +307,98 @@ SHIMMER = [BOLD + GOLD, BOLD + CYAN, BOLD + MAG, BOLD + AMBER, BOLD + GREEN, BOL
 def help_lines(p: "Player") -> list[str]:
     """The help panel — grouped, two-column, and room-aware (the boss hint is computed
     from where the player actually stands, so 'down' is never a lie)."""
-    boss = hint_to(p.room, "dungeon", "the boss")
+    boss_room = _npc_room("boss")
+    boss = hint_to(p.room, boss_room, "the boss") if boss_room else "no boss in this verse (yet)"
+    t_rid = _npc_room("socratic")
+    tid = get_room(t_rid)["npcs"][0] if t_rid else "npc"
     return [
         "  ▸ MOVE",
         "   north south east west up down     shortcuts: n s e w u d",
         "   go <dir>  ·  look (l)             look around the room",
         "",
         "  ▸ LEARN",
-        "   talk oracle          begin the Oracle's trial",
-        "   ask oracle <q>       ask anything  ·  answer <text>  reply",
+        f"   talk {tid:<15} begin the trial  ·  ask {tid} <q>  ask",
+        "   answer <text>        reply to a question",
         f"   challenge            {boss}",
         "   pull lever           use a feature in the room",
         "",
         "  ▸ YOU",
-        "   stats · profile      your attributes / your identity card",
-        "   certs · inventory    your runes / what you carry",
+        "   stats                your level · xp · energy",
+        "   profile              your identity card",
+        "   certs · inventory    runes you've earned · what you carry",
         "   examine <name>       look at another fren",
         "",
         "  ▸ IDENTITY",
         "   link fren <name>     claim your @fren   (then: verify <code>)",
         "   link nostr|space     bind identities  ·  backup   anchor it",
         "",
-        "  ▸ SOCIAL",
-        "   say <msg> · who      talk to the room / see who's online",
-        "   quit                 save + leave",
-        "",
-        "  Type naturally — 'sup', 'go down', 'who is the boss' all work.",
+        "  ▸ CHAT & HOME",
+        "   say <msg> · who      talk to the room · see who's online",
+        "   chat on|off          mute game chat, just for you",
+        "   home  (/home)        your own room · rename room <name>",
+        "   /fren invite|visit <name>    have frens over · drop by",
+        "   gallery · view <n>   the art on display  ·  quit  save+leave",
     ]
 
 
-# --- the world ---------------------------------------------------------------
-ROOM_ART = {
-    "entrance": [
-        "  ┌──┐  ┌──┐  ┌──┐     ~ insert token ~",
-        "  │▓▓│  │░░│  │▓▓│",
-        "  └──┘  └──┘  └──┘",
-    ],
-    "alcove": [
-        "         .-\"\"\"-.",
-        "        ( o   o )     the Oracle waits, patient",
-        "         '-...-'",
-    ],
-    "vault": [
-        "     .------------.",
-        "     | [#]     ()  |   a sealed chest, banded in gold",
-        "     '------------'",
-    ],
-    "dungeon": [
-        "        .-~~~-.",
-        "      /  x   x  \\    something flickers between two places",
-        "      \\   \\_/   /    — here, and not-here",
-        "        '-...-'",
-    ],
-}
+# --- the world (rooms come from the verse pack; home rooms are per-player) ----
+HOME_PREFIX = "home:"
 
-ROOMS = {
-    "entrance": {
-        "title": "The Arcade Entrance",
-        "desc": ("CRT cabinets hum in the dark, throwing blue light across the carpet. A neon sign "
-                 "buzzes: PAC'S ARCADE — KNOWLEDGE IS THE HIGH SCORE. A worn token-slot glows, waiting. "
-                 "A stairwell descends into a cold blue glow."),
-        "exits": {"north": "alcove", "east": "vault", "down": "dungeon"},
-        "npcs": [],
-    },
-    "dungeon": {
-        "title": "The Proof Dungeon",
-        "desc": ("Down here the hum turns to a drone. Something vast and half-real coils in the dark, "
-                 "flickering between two places at once. It has been trying to spend the same coin "
-                 "twice since before you were born. Type  challenge  to face it."),
-        "exits": {"up": "entrance"},
-        "npcs": ["wraith"],
-    },
-    "alcove": {
-        "title": "The Oracle's Alcove",
-        "desc": ("A single cabinet stands apart, its screen a calm violet. A brass plate reads ASK, "
-                 "AND DEMONSTRATE. This is where the Oracle holds court, trading questions for "
-                 "understanding. It never lectures. It only asks."),
-        "exits": {"south": "entrance"},
-        "npcs": ["oracle"],
-    },
-    "vault": {
-        "title": "The Puzzle Vault",
-        "desc": ("Cold stone, warmer than it looks. A great iron LEVER juts from the wall beside a "
-                 "sealed chest banded in gold. Etched above it: 'What is written here, only you may "
-                 "keep. Lose the scroll, lose the treasure.' The lever is a logic gate — pull it."),
-        "exits": {"west": "entrance"},
-        "npcs": [],
-    },
-}
+
+def home_id(name: str) -> str:
+    return HOME_PREFIX + name
+
+
+def is_home(room_id: str) -> bool:
+    return room_id.startswith(HOME_PREFIX)
+
+
+def home_owner(room_id: str) -> str:
+    return room_id[len(HOME_PREFIX):]
+
+
+def get_room(room_id: str) -> dict:
+    """Resolve any room id — verse rooms from the pack, `home:<player>` built on the fly.
+    Unknown ids (a stale save from another verse) land on the verse start room."""
+    if is_home(room_id):
+        owner = room_id[len(HOME_PREFIX):]
+        custom = STORE.get_feature(room_id, "room_name", None)
+        return {
+            "title": custom or VERSE["home"]["default_name"].format(name=owner),
+            "desc": VERSE["home"]["desc"],
+            "exits": {"south": VERSE["start_room"]},
+            "npcs": [], "art": [], "home_of": owner,
+        }
+    return ROOMS.get(room_id) or ROOMS[VERSE["start_room"]]
+
+
+def _npc_room(kind: str) -> "str | None":
+    """First verse room hosting an NPC of `kind` ('socratic' | 'boss') — for hints."""
+    for rid, room in ROOMS.items():
+        for n in room["npcs"]:
+            if NPCS[n]["kind"] == kind:
+                return rid
+    return None
+
+
+def npc_here(p: "Player", kind: "str | None" = None) -> "tuple[str, dict] | None":
+    for nid in get_room(p.room)["npcs"]:
+        if kind is None or NPCS[nid]["kind"] == kind:
+            return nid, NPCS[nid]
+    return None
+
+
+def _match_npc(text: str, room_npcs: list[str]) -> "str | None":
+    """Match player text ('oracle', 'the quartermaster', 'boss') to an NPC in the room."""
+    text = text.strip().lower()
+    if not text:
+        return None
+    for nid in room_npcs:
+        if text == nid or text in NPCS[nid]["name"].lower():
+            return nid
+        if text == "boss" and NPCS[nid]["kind"] == "boss":
+            return nid
+    return None
 
 PLAYERS: dict[asyncio.StreamWriter, "Player"] = {}
 BOARD_W = 72     # inner width of the play window
@@ -395,7 +424,7 @@ class Player:
     def __init__(self, writer: asyncio.StreamWriter):
         self.writer = writer
         self.name = "a nameless fren"
-        self.room = "entrance"
+        self.room = VERSE["start_room"]
         self.inventory: list[str] = []
         self.certs: list[dict] = []
         self.wallet = ""
@@ -406,7 +435,7 @@ class Player:
         self.xp = 0
         self.level = 1
         self.energy = 100
-        self.oracle_pending = False
+        self.trial_pending = None          # socratic-NPC id awaiting an answer
         self.boss_pending = None           # boss id awaiting an answer
         self.focus: dict | None = None     # the window's current panel {title, lines, color}
         self.log: list[str] = []           # message-log strip (transient lines)
@@ -419,6 +448,7 @@ class Player:
         self.session_start_xp = 0          # snapshots for the "goodnight" session summary
         self.session_start_runes = 0
         self.muted = False                 # operator moderation
+        self.chat_muted = False            # player's OWN choice: mute game chat ('chat off')
         self.timeout_until = 0.0
         self.watched = False
 
@@ -436,26 +466,48 @@ def _wrap(text: str, width: int) -> list[str]:
 
 
 def focus_room(p: Player) -> None:
-    room = ROOMS[p.room]
+    room = get_room(p.room)
     lines: list[str] = []
-    art = ROOM_ART.get(p.room)
-    if art:
-        lines += art + [""]
     lines += _wrap(room["desc"], BOARD_W - 4)
     lines.append("")
+    if room.get("home_of"):                    # a player's own room: their showcase
+        lines += _home_showcase(room["home_of"], viewer=p)
     if room["npcs"]:
-        hint = "(type 'challenge')" if "wraith" in room["npcs"] else "(try 'talk oracle')"
-        lines.append("Here: " + ", ".join(n.title() for n in room["npcs"]) + "   " + hint)
+        first = NPCS[room["npcs"][0]]
+        hint = "(type 'challenge')" if first["kind"] == "boss" else f"(try 'talk {room['npcs'][0]}')"
+        lines.append("Here: " + ", ".join(NPCS[n]["name"] for n in room["npcs"]) + "   " + hint)
     others = [pl.name for w, pl in PLAYERS.items() if pl.room == p.room and pl is not p]
     if others:
         lines.append("Also here: " + ", ".join(others))
     lines.append("")
     lines.append(exits_line(room))    # same glyphs as the arrows on the frame border
-    p.focus = {"title": room["title"], "lines": lines, "color": GREEN}
+    focus_text(p, room["title"], lines, GREEN, art=room.get("art"))
 
 
-def focus_text(p: Player, title: str, lines: list[str], color: str = GREEN) -> None:
-    p.focus = {"title": title, "lines": list(lines), "color": color}
+def _home_showcase(owner: str, viewer: "Player") -> list[str]:
+    """The rune wall + gallery corner rendered inside a home room."""
+    certs = (viewer.certs if viewer.name == owner
+             else STORE.list_certificates(owner))
+    lines = []
+    if certs:
+        lines.append(f"On the wall: {len(certs)} soulbound rune(s)")
+        lines += [f"   * {ct['rune_name']}" for ct in certs[:4]]
+        if len(certs) > 4:
+            lines.append(f"   …and {len(certs) - 4} more")
+    else:
+        lines.append("The rune wall waits for its first etch.")
+    if GALLERY:
+        lines.append(f"Gallery corner: {len(GALLERY)} piece(s) on display   (try 'gallery')")
+    lines.append("")
+    return lines
+
+
+def focus_text(p: Player, title: str, lines: list[str], color: str = GREEN,
+               media: "dict | None" = None, art: "list[str] | None" = None) -> None:
+    """`art` is a block that must never re-wrap: terminals center it in the frame,
+    the web client renders it as its own no-wrap block (so walls survive mobile)."""
+    p.focus = {"title": title, "lines": list(lines), "color": color, "media": media,
+               "art": list(art) if art else []}
 
 
 def push(p: Player, line: str) -> None:
@@ -529,13 +581,18 @@ def _frame(title: str, body: list[str], exits: dict, color: str) -> list[str]:
 
 
 def render_screen(p: Player) -> str:
-    room = ROOMS[p.room]
+    room = get_room(p.room)
     f = p.focus or {"title": room["title"], "lines": [], "color": GREEN}
     who = f"@{p.fren_tag}" if p.fren_tag else p.name
-    header = c(BOLD + MAG, "  PAC'S ARCADE · P.O.K.E.") + c(GREY, f"      {who} · {room['title']}")
-    hud = ("  " + c(GOLD, f"⭐ Lv {p.level}") + c(GREY, " · ") + c(CYAN, f"✦ {p.xp} xp")
+    header = (c(BOLD + MAG, f"  {VERSE['name'].upper()} · P.O.K.E.")
+              + c(GREY, f"      {who} · {room['title']}"))
+    rank = verses.rank_for(VERSE, p.level)
+    hud = ("  " + c(GOLD, f"⭐ Lv {p.level}") + (c(AMBER, f" {rank}") if rank else "")
+           + c(GREY, " · ") + c(CYAN, f"✦ {p.xp} xp")
            + c(GREY, " · ") + c(GOLD, f"🎓 {len(p.certs)}") + c(GREY, " · ") + c(GREEN, f"⚡ {p.energy}"))
-    frame = _frame(f["title"], f["lines"], room["exits"], f.get("color", GREEN))
+    art = f.get("art") or []
+    body = (center_block(art) + [""] if art else []) + f["lines"]
+    frame = _frame(f["title"], body, room["exits"], f.get("color", GREEN))
     log = list(p.log)[-LOG_H:]
     log = [""] * (LOG_H - len(log)) + log            # bottom-align the log
     # Crop every free-form row to the window width — a line that hard-wraps in the
@@ -571,18 +628,23 @@ def display_name(p: "Player") -> str:
 
 def screen_model(p: "Player") -> dict:
     """The structured screen the browser renders. Everything is plain text + hints — no ANSI."""
-    room = ROOMS[p.room]
+    room = get_room(p.room)
     f = p.focus or {"title": room["title"], "lines": [], "color": GREEN}
     fx, p.pending_fx = p.pending_fx, []
     return {
         "t": "screen",
+        "verse": VERSE["name"],
         "room": room["title"],
         "who": display_name(p),
         "hud": {"level": p.level, "xp": p.xp, "xp_into": p.xp % 100,
-                "runes": len(p.certs), "energy": p.energy},
+                "runes": len(p.certs), "energy": p.energy,
+                "rank": verses.rank_for(VERSE, p.level)},
         "title": f.get("title") or room["title"],
         "color": _color_name(f.get("color", GREEN)),
+        "art": [_plain(l) for l in (f.get("art") or [])],   # no-wrap block; client centers it
         "body": [_plain(l) for l in f.get("lines", [])],
+        # Real ordinal/rune media for capable clients — unless the node forces ASCII.
+        "media": (f.get("media") if ART_MODE == "media" else None),
         "exits": list(room["exits"].keys()),
         "log": [_plain(l) for l in list(p.log)[-LOG_H:]],
         "fx": fx,
@@ -599,10 +661,12 @@ async def show(p: Player) -> None:
 
 
 # Command words a player may NOT use as a name (so nobody is called "help" or "quit").
-RESERVED_NAMES = {"help", "quit", "exit", "q", "look", "l", "admin", "oracle", "wraith", "boss",
+RESERVED_NAMES = {"help", "quit", "exit", "q", "look", "l", "admin", "boss",
                   "say", "go", "north", "south", "east", "west", "up", "down", "n", "s", "e", "w",
                   "talk", "answer", "ask", "challenge", "fight", "stats", "profile", "certs", "runes",
-                  "inventory", "inv", "i", "backup", "link", "verify", "who", "pull", "examine"}
+                  "inventory", "inv", "i", "backup", "link", "verify", "who", "pull", "examine",
+                  "home", "rename", "invite", "visit", "gallery", "view", "enter",
+                  "chat", "fren"} | set(NPCS)
 
 
 async def _prompt_again(p: "Player", text: str) -> None:
@@ -613,87 +677,67 @@ async def _prompt_again(p: "Player", text: str) -> None:
         await p.send(c(AMBER, "\r\n" + text + " "))
 
 
+def center_block(lines: list[str]) -> list[str]:
+    """Center a block of art in the frame as ONE unit — every line shifts by the same
+    offset, so the piece's internal alignment survives."""
+    width = max((dwidth(l) for l in lines), default=0)
+    off = max(0, (BOARD_W - 2 - width) // 2)
+    return [" " * off + l for l in lines]
+
+
 async def animate(p: Player, frames: list[list[str]], title: str, color: str = GOLD, hold: float = 0.5) -> None:
-    """Play ASCII frames inside the window — the primitive bosses & lesson effects use."""
+    """Play ASCII frames inside the window — the primitive bosses & lesson effects use.
+    Frames ride the art channel: centered on terminals, never re-wrapped on the web."""
     for frame in frames:
-        focus_text(p, title, frame, color)
+        focus_text(p, title, [], color, art=frame)
         await show(p)
         await asyncio.sleep(hold)
 
 
-# --- the Oracle --------------------------------------------------------------
-SELF_CUSTODY = {"class_id": "self-custody", "rune": "PACS•SELF•CUSTODY", "title": "Bitcoin Self-Custody 101"}
-ORACLE_QUESTION = ("With a bitcoin wallet there is ONE secret that is yours alone — lose it and the "
-                   "coins are gone, share it and they're stolen. What is that secret called?")
-ORACLE_KEYS = ("seed", "recovery phrase", "recovery-phrase", "private key", "privatekey", "mnemonic", "seed phrase")
+# --- NPC rail: verse NPCs are run by the node's local AI ----------------------
+# Every NPC in a verse pack declares a persona (its system prompt), a kind
+# ('socratic' teachers, 'boss' encounters), an optional scripted trial, and a
+# fallback line for nodes without a local model. Free text routed to an NPC goes
+# to the local LLM with the player's recent memory (DB-2) — so bots REMEMBER
+# frens across visits. Dungeon encounters ride the same rail: data, not code.
+def _npc_panel(npc: dict, lines: list[str]) -> list[str]:
+    return ["", f"  {npc['name']} turns its attention to you.", ""] + ["  " + l for l in lines]
 
 
-def _oracle_panel(lines: list[str]) -> list[str]:
-    return ["", "  The Oracle's screen warms from violet to gold.", ""] + ["  " + l for l in lines]
+async def trial_open(p: Player, nid: str) -> None:
+    npc = NPCS[nid]
+    trial = npc.get("trial")
+    if not trial:
+        await converse_npc(p, nid, "hello")
+        return
+    p.trial_pending = nid
+    body = _npc_panel(npc, _wrap('"' + trial["question"] + '"', BOARD_W - 6)
+                      + ["", "(answer with:  answer <your words>)"])
+    focus_text(p, npc["name"], body, MAG)
 
 
-async def oracle_open(p: Player) -> None:
-    p.oracle_pending = True
-    body = _oracle_panel(_wrap('"' + ORACLE_QUESTION + '"', BOARD_W - 6) + ["", "(answer with:  answer <your words>)"])
-    focus_text(p, "The Oracle", body, MAG)
-
-
-async def oracle_judge(p: Player, ans: str) -> None:
-    p.oracle_pending = False
+async def trial_judge(p: Player, ans: str) -> None:
+    nid, p.trial_pending = p.trial_pending, None
+    npc = NPCS[nid]
+    trial = npc["trial"]
     low = ans.lower()
-    if any(k in low for k in ORACLE_KEYS):
-        if await asyncio.to_thread(STORE.has_certificate, p.name, SELF_CUSTODY["class_id"]):
-            focus_text(p, "The Oracle", _oracle_panel(_wrap(
-                '"Yes — the seed phrase. But you already hold this rune, fren; I don\'t etch a truth twice. '
-                'Wear it well."', BOARD_W - 6)), MAG)
+    if any(k in low for k in trial["keys"]):
+        if await asyncio.to_thread(STORE.has_certificate, p.name, trial["class"]["class_id"]):
+            focus_text(p, npc["name"], _npc_panel(npc, _wrap('"' + trial["already"] + '"', BOARD_W - 6)), MAG)
         else:
             global RUNES_ETCHED
             RUNES_ETCHED += 1
-            await asyncio.to_thread(STORE.record_competency, p.name, "bitcoin-self-custody", 0.9,
-                                    "Understood the seed phrase is the treasure, not a resettable password.")
-            push(p, c(MAG, 'The Oracle: "You understood the stakes, not a definition."'))
-            await etch_class_rune(p, SELF_CUSTODY)
+            await asyncio.to_thread(STORE.record_competency, p.name, trial["class"]["class_id"], 0.9,
+                                    f"Passed {npc['name']}'s trial: {trial['class']['title']}.")
+            push(p, c(MAG, f'{npc["name"]}: "{trial.get("pass_line", "Understanding demonstrated.")}"'))
+            await etch_class_rune(p, trial["class"], xp=int(trial.get("xp", 100)))
     else:
-        p.oracle_pending = True
-        focus_text(p, "The Oracle", _oracle_panel(_wrap(
-            '"Close — but feel the weight of it. Not your address, not your PIN. The one string of words '
-            'that IS the money. Try again:  answer <text>"', BOARD_W - 6)), MAG)
-
-
-async def oracle_freeform(p: Player, question: str) -> None:
-    focus_text(p, "The Oracle", _oracle_panel(["…the Oracle considers…"]), MAG)
-    await show(p)
-    reply = ""
-    if INFERENCE_BASE_URL and GEN_MODEL:
-        reply = await asyncio.get_event_loop().run_in_executor(None, _llm_reply, question)
-    if not reply:
-        reply = ("A fine question. I won't hand you the answer — that's not how the high score is earned. "
-                 "What would have to be TRUE for that to make sense? Reason it aloud. "
-                 "(Set PA_GEN_MODEL with a local model to hear me think freely.)")
-    focus_text(p, "The Oracle", _oracle_panel(_wrap('"' + reply.strip() + '"', BOARD_W - 6)), MAG)
-
-
-def _llm_reply(question: str) -> str:
-    try:
-        body = json.dumps({
-            "model": GEN_MODEL,
-            "messages": [
-                {"role": "system", "content": "You are the Oracle at Pac's Arcade — a Socratic bitcoin/nostr "
-                 "educator. Say 'fren', never 'friend'. Be brief (2-3 sentences), ask a probing question."},
-                {"role": "user", "content": question},
-            ],
-            "max_tokens": 160, "temperature": 0.7,
-        }).encode()
-        req = urllib.request.Request(INFERENCE_BASE_URL.rstrip("/") + "/chat/completions",
-                                     data=body, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            return json.loads(r.read())["choices"][0]["message"]["content"]
-    except Exception:
-        return ""
+        p.trial_pending = nid
+        focus_text(p, npc["name"], _npc_panel(npc, _wrap('"' + trial["retry"] + '"', BOARD_W - 6)), MAG)
 
 
 def cert_card_lines(cert: dict) -> list[str]:
-    return [
+    lines = [
         "",
         "  *  " + cert["rune_name"],
         "",
@@ -702,26 +746,36 @@ def cert_card_lines(cert: dict) -> list[str]:
         "  Wallet:  " + cert["original_wallet"],
         "  soulbound · non-transferable · regtest (mock)",
         "",
-        "  Etched into your wallet. Block time + wallet live on-chain — even",
-        "  if it's ever moved, everyone knows YOU earned it. 💜",
     ]
+    if DEMO_MODE:
+        lines += [
+            "  ⚠ DEMO rune — practice only. Courses aren't rated for real",
+            "  certification yet; nothing here is a credential.",
+        ]
+    else:
+        lines += [
+            "  Etched into your wallet. Block time + wallet live on-chain — even",
+            "  if it's ever moved, everyone knows YOU earned it. 💜",
+        ]
+    return lines
 
 
-async def etch_class_rune(p: Player, spec: dict) -> None:
+async def etch_class_rune(p: Player, spec: dict, xp: int = 100) -> None:
     block = 21_000 + len(p.certs)
     cert = await asyncio.to_thread(
         STORE.etch_certificate, p.name, spec["class_id"], spec["rune"], spec["title"], p.wallet, block
     )
     p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
     old_level = p.level
-    res = await asyncio.to_thread(STORE.add_xp, p.name, 100); p.xp, p.level = res["xp"], res["level"]
+    res = await asyncio.to_thread(STORE.add_xp, p.name, xp); p.xp, p.level = res["xp"], res["level"]
     p.pending_fx.append("etch")                        # cue the web client to glow/particle the etch
-    event("etch", f"{display_name(p)} etched {spec['rune']} (+100 xp)")
+    demo = " [demo]" if DEMO_MODE else ""
+    event("etch", f"{display_name(p)} etched {spec['rune']}{demo} (+{xp} xp)")
     await animate(p, RUNE_ANIM, "Etching a rune...", GOLD, hold=1.3)
-    focus_text(p, "Soulbound Class Rune", cert_card_lines(cert), GOLD)
+    focus_text(p, "Soulbound Class Rune" + (" · DEMO" if DEMO_MODE else ""), cert_card_lines(cert), GOLD)
     if p.level > old_level:
         p.pending_fx.append("levelup")
-    push(p, c(GOLD, f"🎓 etched {spec['rune']}  (+100 xp)"))
+    push(p, c(GOLD, f"🎓 etched {spec['rune']}{demo}  (+{xp} xp)"))
 
 
 # --- identity: @fren / nostr / spaces, pairing code, on-chain backup ---------
@@ -827,15 +881,18 @@ async def show_profile(p: Player) -> None:
 
 async def show_certs(p: Player) -> None:
     if not p.certs:
-        where = hint_to(p.room, "alcove", "The Oracle's Alcove")
+        rid = _npc_room("socratic")
+        where = (hint_to(p.room, rid, get_room(rid)["title"]) if rid
+                 else "seek out a teacher")
         focus_text(p, "Your runes", ["", "  No class runes yet.", "",
                                       f"  {where} — runes are earned there. 🎓"], GOLD)
         return
-    lines = ["", "  Your soulbound class runes:", ""]
+    lines = ["", "  Your soulbound class runes:" + ("   (DEMO — practice only)" if DEMO_MODE else ""), ""]
     for cert in p.certs:
         lines.append(f"  * {cert['rune_name']}  -  {cert['title']}")
         lines.append(f"       earned {cert['block_time']} · block {cert['block_height']}")
-    lines += ["", "  Non-transferable. Move one and provenance still names you."]
+    lines += ["", ("  ⚠ Demo runes — not real credentials until the courses are audited."
+                   if DEMO_MODE else "  Non-transferable. Move one and provenance still names you.")]
     focus_text(p, "Your runes", lines, GOLD)
 
 
@@ -937,11 +994,29 @@ def nodes_report(status: dict) -> str:
     return "\n".join(lines)
 
 
+def art_mode_set(mode: str) -> str:
+    """Console/admin toggle: 'ascii' forces ASCII art everywhere; 'media' lets web
+    clients render real ordinal/rune images + video."""
+    global ART_MODE
+    mode = mode.strip().lower()
+    if mode in ("ascii", "on"):           # 'art ascii on' and plain 'art ascii'
+        ART_MODE = "ascii"
+    elif mode in ("media", "off", "ascii off"):
+        ART_MODE = "media"
+    else:
+        return f"art mode is '{ART_MODE}' — usage:  art ascii|media"
+    event("admin", f"art mode → {ART_MODE}")
+    return f"art mode → {ART_MODE}" + ("  (ASCII everywhere)" if ART_MODE == "ascii"
+                                       else "  (web clients may render full media)")
+
+
 def stats_json() -> dict:
     return {
         "uptime_s": int(time.time() - SERVER_START),
         "player_count": len(PLAYERS),
         "world": WORLD,
+        "verse": VERSE["id"],
+        "art_mode": ART_MODE,
         "players": [{
             "name": p.name, "fren": p.fren_tag, "world": WORLD, "room": p.room,
             "client": "web" if p.web else "terminal", "module": "FREE PLAY",
@@ -954,6 +1029,9 @@ def stats_json() -> dict:
         "store": {"backend": type(STORE).__name__, "location": getattr(STORE, "path", "postgres DB-2")},
         "oracle": ("local-llm:" + GEN_MODEL) if (INFERENCE_BASE_URL and GEN_MODEL) else "scripted",
         "chat_matrix": CHAT_MATRIX,
+        "game_chat": GAME_CHAT,
+        "chat_blocked": _load_chatblocks(),
+        "demo_mode": DEMO_MODE,
         "qa": {"flagged": sum(1 for f in _QA_FLAGS if f["status"] == "FLAGGED"),
                "in_review": sum(1 for f in _QA_FLAGS if f["status"] == "IN REVIEW"),
                "corrected": sum(1 for f in _QA_FLAGS if f["status"] == "CORRECTED"),
@@ -1022,6 +1100,70 @@ def set_chat_matrix(on: bool) -> str:
     return f"matrix chat {'ON — say now mirrors to the Matrix verse' if on else 'off — local rooms only'}"
 
 
+# --- game-chat controls (global kill switch + per-@tag restriction) ------------
+CHATBLOCK_FILE = os.environ.get("PA_CHATBLOCK_FILE", os.path.join(DATA_DIR, "chatblock.json"))
+
+
+def _load_chatblocks() -> list[str]:
+    try:
+        with open(CHATBLOCK_FILE) as f:
+            return [str(t).lstrip("@").lower() for t in json.load(f).get("blocked", [])]
+    except Exception:
+        return []
+
+
+def set_game_chat(on: bool) -> str:
+    global GAME_CHAT
+    GAME_CHAT = bool(on)
+    event("admin", f"game chat {'ON' if on else 'OFF (node-wide)'}")
+    return f"game chat {'ON — frens can say to the room' if on else 'OFF — says are local-only node-wide'}"
+
+
+def chat_restrict(tag: str, blocked: bool) -> str:
+    tag = tag.strip().lstrip("@").lower()
+    if not tag:
+        return "usage: chat block|allow <@tag>"
+    blocks = _load_chatblocks()
+    if blocked and tag not in blocks:
+        blocks.append(tag)
+    if not blocked:
+        blocks = [b for b in blocks if b != tag]
+    os.makedirs(os.path.dirname(os.path.abspath(CHATBLOCK_FILE)), exist_ok=True)
+    with open(CHATBLOCK_FILE, "w") as f:
+        json.dump({"blocked": blocks}, f, indent=2)
+    event("admin", f"chat {'restricted' if blocked else 'allowed'} for @{tag}")
+    return f"@{tag} chat {'restricted — their says stay local' if blocked else 'allowed'}"
+
+
+def chat_blocked(p: "Player") -> bool:
+    blocks = _load_chatblocks()
+    return p.name.lower() in blocks or (p.fren_tag or "").lower() in blocks
+
+
+def chat_status() -> dict:
+    return {"game_chat": GAME_CHAT, "matrix": CHAT_MATRIX, "blocked": _load_chatblocks()}
+
+
+def chat_admin(rest: str) -> str:
+    """One grammar for every operator surface: console, in-MUD admin, HTTP."""
+    sub, _, arg = rest.partition(" ")
+    sub, arg = sub.lower().strip(), arg.strip()
+    if sub in ("on", "off"):
+        return set_game_chat(sub == "on")
+    if sub == "matrix":
+        return set_chat_matrix(arg.lower() in ("on", "1", "true", "yes"))
+    if sub == "block":
+        return chat_restrict(arg, True)
+    if sub == "allow":
+        return chat_restrict(arg, False)
+    if sub in ("", "status", "blocks"):
+        st = chat_status()
+        blocked = (", ".join("@" + b for b in st["blocked"])) if st["blocked"] else "none"
+        return (f"game chat {'ON' if st['game_chat'] else 'OFF'} · matrix "
+                f"{'ON' if st['matrix'] else 'off'} · restricted tags: {blocked}")
+    return "usage: chat on|off · chat matrix on|off · chat block|allow <@tag> · chat status"
+
+
 async def forward_chat_to_matrix(room: str, sender: str, body: str) -> None:
     if not CHAT_MATRIX:
         return
@@ -1043,8 +1185,9 @@ async def forward_chat_to_matrix(room: str, sender: str, body: str) -> None:
 
 CONSOLE_HELP = (
     "P.O.K.E. operator console:\n"
-    "  stats · who · nodes · events · broadcast <m> · kick <n> · chat on|off\n"
-    "  ext <name> on|off · games · reboot · shutdown · help"
+    "  stats · who · nodes · events · broadcast <m> · kick <n>\n"
+    "  chat on|off · chat matrix on|off · chat block|allow <@tag> · chat status\n"
+    "  art ascii|media · ext <name> on|off · games · reboot · shutdown · help"
 )
 
 
@@ -1069,7 +1212,9 @@ async def handle_console(cmd: str) -> None:
     elif verb == "kick":
         cprint(await op_kick(rest) if rest else "usage: kick <name>")
     elif verb == "chat":
-        cprint(set_chat_matrix(rest.lower() in ("on", "1", "true", "yes")))
+        cprint(chat_admin(rest))
+    elif verb == "art":
+        cprint(art_mode_set(rest))
     elif verb == "ext":
         name, _, state = rest.partition(" ")
         cprint(extensions_set(name.strip(), state.strip().lower() in ("on", "1", "true", "yes"))
@@ -1180,6 +1325,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             return
         if path in ("/stats", "/health"):
             self._reply(200, stats_json())
+        elif path == "/chat":
+            self._reply(200, chat_status())
         elif path == "/events":
             since = 0
             if "?" in self.path:
@@ -1242,6 +1389,11 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"ok": True, "result": self._run(op_kick(data.get("player", "")))})
         elif path == "/chat":
             self._reply(200, {"ok": True, "result": set_chat_matrix(bool(data.get("enabled")))})
+        elif path == "/gamechat":
+            self._reply(200, {"ok": True, "result": set_game_chat(bool(data.get("enabled")))})
+        elif path == "/chat/restrict":
+            self._reply(200, {"ok": True, "result": chat_restrict(
+                str(data.get("tag", "")), bool(data.get("blocked", True)))})
         elif path == "/reboot":
             self._run(op_shutdown("web-admin reboot", reboot=True), timeout=2)
             self._reply(200, {"ok": True, "result": "rebooting"})
@@ -1269,6 +1421,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         elif path == "/extensions":
             self._reply(200, {"ok": True, "result": extensions_set(
                 str(data.get("name", "")).strip(), bool(data.get("enabled")))})
+        elif path == "/art":
+            self._reply(200, {"ok": True, "result": art_mode_set(str(data.get("mode", "")))})
         elif path == "/torrent":
             self._reply(200, {"ok": True, "result": torrent_control(
                 str(data.get("action", "status")), data.get("corpus_id"))})
@@ -1332,7 +1486,7 @@ async def admin_command(p: Player, rest: str) -> None:
     elif sub == "kick":
         push(p, c(GREY, (await op_kick(arg)) if arg else "usage: admin kick <name>"))
     elif sub == "chat":
-        push(p, c(GREY, set_chat_matrix(arg.lower() in ("on", "1", "true", "yes"))))
+        push(p, c(GREY, chat_admin(arg)))
     elif sub == "reboot":
         push(p, c(RED, "rebooting the node…")); await op_shutdown("in-MUD operator reboot", reboot=True)
     elif sub == "shutdown":
@@ -1342,66 +1496,46 @@ async def admin_command(p: Player, rest: str) -> None:
 
 
 # =============================================================================
-# The boss — an animated encounter with a question gate and a reward.
+# Boss encounters — animated question gates, defined entirely by the verse pack.
 # =============================================================================
-WRAITH = {
-    "id": "wraith",
-    "name": "The Double-Spend Wraith",
-    "class": {"class_id": "consensus", "rune": "PACS•CONSENSUS", "title": "Bitcoin Consensus 101"},
-    "question": ("\"I am one coin, spent twice. I split the ledger and feast on the confusion. Name the "
-                 "mechanism that forces the whole network to agree on ONE history — and I unravel.\""),
-    "keys": ("proof of work", "proof-of-work", "pow", "mining", "miners", "longest chain",
-             "heaviest chain", "most work", "confirmation", "consensus", "nakamoto", "hash"),
-    "xp": 150,
-}
-# The Wraith flickers position/face across frames so it visibly MOVES during the encounter.
-WRAITH_ANIM = [
-    ["", "  it is in two places at once...", "", "        .-~~~-.", "      (  x   x  )", "       \\   ^   /", "        '-...-'", ""],
-    ["", "  ...here, and not-here...", "", "    .-~~~-.", "  (  X   X  )", "   \\   >   /", "    '-...-'", ""],
-    ["", "  \"which history is TRUE?\"", "", "         .-~~~-.", "       (  @   @  )", "        \\   O   /", "         '-...-'", ""],
-]
-WRAITH_DEFEAT = [
-    ["", "  the forks collapse toward one...", "", "        .-~~~-.", "      (  x   x  )", "       \\   _   /", "        '-...-'", ""],
-    ["", "  ...one chain...", "", "         .-~-.", "       (  -   -  )", "        \\  _  /", "         '-.-'", ""],
-    ["", "  the Wraith unravels.", "", "           \\  |  /", "         ==  ONE  ==", "           /  |  \\", "", ""],
-]
-
-
-async def boss_open(p: Player) -> None:
-    p.boss_pending = WRAITH["id"]
-    await animate(p, WRAITH_ANIM, WRAITH["name"], RED, hold=1.3)
-    focus_text(p, WRAITH["name"], ["", "  " + WRAITH["name"] + " rounds on you.", ""]
-               + ["  " + l for l in _wrap(WRAITH["question"], BOARD_W - 6)]
+async def boss_open(p: Player, nid: str) -> None:
+    npc = NPCS[nid]
+    p.boss_pending = nid
+    if npc.get("anim"):
+        await animate(p, npc["anim"], npc["name"], RED, hold=1.3)
+    focus_text(p, npc["name"], ["", "  " + npc["name"] + " rounds on you.", ""]
+               + ["  " + l for l in _wrap(npc["question"], BOARD_W - 6)]
                + ["", "  (answer with:  answer <your words>)"], RED)
 
 
 async def boss_judge(p: Player, ans: str) -> None:
-    if any(k in ans.lower() for k in WRAITH["keys"]):
+    nid = p.boss_pending
+    npc = NPCS[nid]
+    if any(k in ans.lower() for k in npc["keys"]):
         p.boss_pending = None
         # Anti-farming: reward (XP + rune + energy) is granted ONCE — the first time you learn it.
-        already = await asyncio.to_thread(STORE.has_certificate, p.name, WRAITH["class"]["class_id"])
+        already = await asyncio.to_thread(STORE.has_certificate, p.name, npc["class"]["class_id"])
         p.pending_fx.append("victory")                 # cue the web client's boss-defeat effect
-        await animate(p, WRAITH_DEFEAT, WRAITH["name"] + " - defeated", GOLD, hold=1.3)
+        if npc.get("defeat_anim"):
+            await animate(p, npc["defeat_anim"], npc["name"] + " - defeated", GOLD, hold=1.3)
         if already:
-            focus_text(p, "Victory", ["", "  The Wraith yields — but you've already mastered this truth.", "",
-                                      "  No XP for a lesson you already own, fren. Come back when there's a",
-                                      "  NEW boss with something new to teach. (Harder rematch questions and",
-                                      "  boss riddles are on the way — see docs/ROADMAP.md.)"], GOLD)
+            focus_text(p, "Victory", ["", "  You've already mastered this truth, fren."]
+                       + npc.get("already_lines", []), GOLD)
             push(p, c(GREY, "already mastered — no farming"))
             return
         old_level = p.level
-        res = await asyncio.to_thread(STORE.add_xp, p.name, WRAITH["xp"]); p.xp, p.level = res["xp"], res["level"]
-        p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, 20)
+        res = await asyncio.to_thread(STORE.add_xp, p.name, npc["xp"]); p.xp, p.level = res["xp"], res["level"]
+        p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, int(npc.get("energy_win", 20)))
         if p.level > old_level:
             p.pending_fx.append("levelup")
-        push(p, c(GOLD, f"the Wraith unravels  (+{WRAITH['xp']} xp)"))
-        await etch_class_rune(p, WRAITH["class"])
+        push(p, c(GOLD, f"{npc.get('victory_line', npc['name'] + ' is defeated')}  (+{npc['xp']} xp)"))
+        await etch_class_rune(p, npc["class"])
     else:
-        p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, -15)
-        p.boss_pending = WRAITH["id"]
-        focus_text(p, WRAITH["name"], ["", "  The Wraith laughs and splits again.  (-15 ⚡)", "",
-                                       "  Think: what does a miner burn to extend the chain, making a",
-                                       "  rewrite absurdly expensive?   answer <text>"], RED)
+        miss = int(npc.get("energy_miss", -15))
+        p.energy = await asyncio.to_thread(STORE.adjust_energy, p.name, miss)
+        p.boss_pending = nid
+        focus_text(p, npc["name"], ["", f"  {npc['name']} laughs and holds.  ({miss} ⚡)", ""]
+                   + ["  " + l for l in _wrap(npc.get("fail_hint", "Try again:  answer <text>"), BOARD_W - 6)], RED)
 
 
 # =============================================================================
@@ -1418,8 +1552,8 @@ async def show_attributes(p: Player) -> None:
         f"  Energy    : {p.energy}/100",
         f"  @fren     : {('@' + p.fren_tag) if p.fren_tag else 'unlinked  (link fren <name>)'}",
         "",
-        "  Earn xp from the Oracle and by defeating bosses.",
-        f"  {hint_to(p.room, 'dungeon', 'The dungeon')}.  See a fren:  examine <name>",
+        "  Earn xp from teachers and by defeating bosses.",
+        f"  {hint_to(p.room, _npc_room('boss') or VERSE['start_room'], 'The boss')}.  See a fren:  examine <name>",
     ], CYAN)
 
 
@@ -1444,6 +1578,98 @@ async def examine(p: Player, name: str) -> None:
 
 
 # =============================================================================
+# Home rooms & the gallery — every fren gets their own room off the floor.
+# Rename it, hang your runes, invite frens over; ordinals/art join the wall as
+# the media rail lands (web clients render real images; terminals get ASCII).
+# =============================================================================
+async def _teleport(p: Player, room_id: str, depart: str, arrive: str) -> None:
+    who = display_name(p)
+    await broadcast_room(p.room, c(GREY, f"{who} {depart}"), exclude=p)
+    p.room = room_id
+    await asyncio.to_thread(STORE.save_player, p.name, p.room, p.inventory)
+    await broadcast_room(p.room, c(GREY, f"{who} {arrive}"), exclude=p)
+    focus_room(p)
+
+
+async def go_home(p: Player) -> None:
+    if is_home(p.room) and home_owner(p.room) == p.name:
+        push(p, c(GREY, "you're already home, fren"))
+        return
+    await _teleport(p, home_id(p.name), "heads up to their quarters.", "arrives home.")
+    push(p, c(MAG, "home sweet home. 💜  (rename room <name> · invite <fren> · gallery)"))
+
+
+async def rename_room(p: Player, new_name: str) -> None:
+    if not new_name:
+        push(p, c(GREY, "usage:  rename room <new name>")); return
+    await asyncio.to_thread(STORE.set_feature, home_id(p.name), "room_name", new_name[:40])
+    push(p, c(GREEN, f"✓ your room is now '{new_name[:40]}'"))
+    if is_home(p.room) and home_owner(p.room) == p.name:
+        focus_room(p)
+
+
+async def invite_fren(p: Player, name: str) -> None:
+    name = name.strip().lstrip("@")
+    if not name:
+        push(p, c(GREY, "usage:  invite <fren>   (they can then:  visit " + p.name + ")")); return
+    invites = await asyncio.to_thread(STORE.get_feature, home_id(p.name), "invites", [])
+    if name.lower() not in [i.lower() for i in invites]:
+        invites.append(name)
+        await asyncio.to_thread(STORE.set_feature, home_id(p.name), "invites", invites)
+    push(p, c(GREEN, f"✓ {name} may now visit your room"))
+    for pl in PLAYERS.values():
+        if pl.name.lower() == name.lower() or (pl.fren_tag or "").lower() == name.lower():
+            push(pl, c(MAG, f"{display_name(p)} invited you over — try:  visit {p.name}"))
+            try:
+                await show(pl)
+            except Exception:
+                pass
+
+
+async def visit_fren(p: Player, name: str) -> None:
+    name = name.strip().lstrip("@")
+    if not name:
+        push(p, c(GREY, "usage:  visit <fren>")); return
+    owner = await asyncio.to_thread(STORE.public_attributes, name)
+    if not owner:
+        push(p, c(GREY, f"no fren called '{name}' is known here")); return
+    owner_name = owner["name"]
+    if owner_name != p.name:
+        invites = await asyncio.to_thread(STORE.get_feature, home_id(owner_name), "invites", [])
+        allowed = {i.lower() for i in invites}
+        if p.name.lower() not in allowed and (p.fren_tag or "").lower() not in allowed:
+            push(p, c(GREY, f"{owner_name}'s door is closed — ask them to  invite {p.name}")); return
+    await _teleport(p, home_id(owner_name), "steps away to visit a fren.", "drops in for a visit.")
+
+
+async def show_gallery(p: Player) -> None:
+    if not GALLERY:
+        focus_text(p, "Gallery", ["", "  No pieces on display in this verse yet.",
+                                  "", "  Verse packs ship gallery art — and your ordinals dock here soon."], AMBER)
+        return
+    lines = ["", "  On display:"]
+    for i, piece in enumerate(GALLERY, 1):
+        artist = piece.get("artist", "unknown")
+        media = "  [media]" if piece.get("media") else ""
+        lines.append(f"   {i}. {piece['title']}   — {artist}{media}")
+    lines += ["", "  view <number>  to stand before a piece."]
+    focus_text(p, "Gallery", lines, AMBER)
+
+
+async def view_piece(p: Player, which: str) -> None:
+    try:
+        piece = GALLERY[int(which.strip()) - 1]
+    except (ValueError, IndexError):
+        push(p, c(GREY, "view which? try  gallery  for the list")); return
+    art = list(piece.get("art", ["(no ascii rendition)"]))
+    art += ["", f"'{piece['title']}' — {piece.get('artist', 'unknown')}"]
+    lines = []
+    if piece.get("media") and ART_MODE != "media":
+        lines.append("  (full media is off on this node — ascii mode)")
+    focus_text(p, piece["title"], lines, AMBER, media=piece.get("media"), art=art)
+
+
+# =============================================================================
 # Flexible input — a fast path (no LLM, zero lag) + an LLM/heuristic fuzzy path.
 # The local model only runs on free text; exact commands never touch it. All the
 # player's turns are stored in DB-2 so the world remembers them cheaply.
@@ -1464,30 +1690,32 @@ def _chat(messages: list[dict], max_tokens: int) -> str:
         return ""
 
 
-def _llm_oracle(text: str, mem: list[dict]) -> str:
-    msgs = [{"role": "system", "content":
-             "You are the Oracle at Pac's Arcade — a Socratic bitcoin/nostr educator in a MUD. Say 'fren', "
-             "never 'friend'. Reply in 1-3 warm sentences and end with a probing question. Never lecture."}]
+def _llm_npc(persona: str, text: str, mem: list[dict]) -> str:
+    msgs = [{"role": "system", "content": persona or
+             "You are a warm NPC in Pac's Arcade — a Socratic educator. Say 'fren', never 'friend'. "
+             "Reply in 1-3 sentences and end with a probing question. Never lecture."}]
     for m in mem:
         msgs.append({"role": "assistant" if m["role"] == "game" else "user", "content": m["text"]})
     msgs.append({"role": "user", "content": text})
     return _chat(msgs, 140)
 
 
-async def converse_oracle(p: Player, text: str) -> None:
-    """Free-form chat with the Oracle. Tiny context (recent memory only), stored in DB-2."""
+async def converse_npc(p: Player, nid: str, text: str) -> None:
+    """Free-form chat with a verse NPC — run by the node's local AI with the player's
+    recent memory (DB-2), so bots remember frens. Scripted fallback without a model."""
+    npc = NPCS[nid]
     await asyncio.to_thread(STORE.add_memory, p.name, "player", text)
-    focus_text(p, "The Oracle", _oracle_panel(["…the Oracle considers…"]), MAG)
+    focus_text(p, npc["name"], _npc_panel(npc, [f"…{npc['name']} considers…"]), MAG)
     await show(p)
     reply = ""
     if INFERENCE_BASE_URL and GEN_MODEL:
         mem = await asyncio.to_thread(STORE.recent_memory, p.name, 6)
-        reply = await asyncio.get_event_loop().run_in_executor(None, _llm_oracle, text, mem)
+        reply = await asyncio.get_event_loop().run_in_executor(None, _llm_npc, npc["persona"], text, mem)
     if not reply:
-        reply = ("I trade in questions, not chit-chat, fren — but I'm listening. Ask me something real about "
-                 "bitcoin or nostr, or say 'talk oracle' to begin the trial. What's on your mind?")
+        reply = npc.get("fallback") or ("I trade in questions, not chit-chat, fren — but I'm listening. "
+                                        "What's on your mind?")
     await asyncio.to_thread(STORE.add_memory, p.name, "game", reply)
-    focus_text(p, "The Oracle", _oracle_panel(_wrap('"' + reply.strip() + '"', BOARD_W - 6)), MAG)
+    focus_text(p, npc["name"], _npc_panel(npc, _wrap('"' + reply.strip() + '"', BOARD_W - 6)), MAG)
 
 
 def _llm_intent(room_title: str, exits: list, npcs: list, line: str) -> dict | None:
@@ -1505,20 +1733,19 @@ def _llm_intent(room_title: str, exits: list, npcs: list, line: str) -> dict | N
 
 async def apply_intent(p: Player, act: dict) -> bool:
     a = (act.get("action") or "").lower()
-    npcs = ROOMS[p.room]["npcs"]
     if a == "move" and act.get("dir"):
         await move(p, act["dir"]); return True
     if a == "talk":
-        if "oracle" in npcs:
-            await oracle_open(p); return True
-        if "wraith" in npcs:
-            await boss_open(p); return True
+        hit = npc_here(p, "socratic") or npc_here(p, "boss")
+        if hit:
+            nid, npc = hit
+            await (boss_open(p, nid) if npc["kind"] == "boss" else trial_open(p, nid)); return True
     if a == "look":
         focus_room(p); return True
     if a == "pull":
         await pull(p, "lever"); return True
-    if a == "challenge" and "wraith" in npcs:
-        await boss_open(p); return True
+    if a == "challenge" and npc_here(p, "boss"):
+        await boss_open(p, npc_here(p, "boss")[0]); return True
     if a == "backup":
         await backup_onchain(p); return True
     if a == "profile":
@@ -1534,25 +1761,25 @@ async def interpret(p: Player, line: str) -> None:
     """The fuzzy path: only reached when no exact command matched. Heuristics first (instant),
     NPC conversation second, the local LLM last — so lag only ever happens on true free text."""
     low = line.lower().strip()
-    npcs = ROOMS[p.room]["npcs"]
     await asyncio.to_thread(STORE.add_memory, p.name, "player", line)
     if any(low == g or low.startswith(g + " ") for g in GREETINGS):
-        if "oracle" in npcs:
-            await oracle_open(p); return
-        if "wraith" in npcs:
-            await boss_open(p); return
+        hit = npc_here(p, "socratic") or npc_here(p, "boss")
+        if hit:
+            nid, npc = hit
+            await (boss_open(p, nid) if npc["kind"] == "boss" else trial_open(p, nid)); return
         push(p, c(GREY, "you say it to the empty room; the cabinets blink back")); return
     for d in DIRS:
         if d in low.split():
             await move(p, d); return
     if low in ("where am i", "look around", "explore", "wat", "what"):
         focus_room(p); return
-    if "oracle" in npcs:                       # in the Alcove, free text IS a question to the Oracle
-        await converse_oracle(p, line); return
+    teacher = npc_here(p, "socratic")
+    if teacher:                                # with a teacher, free text IS a question to them
+        await converse_npc(p, teacher[0], line); return
     if INFERENCE_BASE_URL and GEN_MODEL:       # elsewhere, let the model map intent (only cost when needed)
-        room = ROOMS[p.room]
+        room = get_room(p.room)
         act = await asyncio.get_event_loop().run_in_executor(
-            None, _llm_intent, room["title"], list(room["exits"]), npcs, line)
+            None, _llm_intent, room["title"], list(room["exits"]), room["npcs"], line)
         if act and await apply_intent(p, act):
             return
     push(p, c(GREY, f"hmm — not sure what '{line}' does here. Try  help, or talk to someone."))
@@ -1967,9 +2194,13 @@ DIRS = {"north", "south", "east", "west", "up", "down"}
 DIR_ALIAS = {"n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down"}
 
 
-async def broadcast_room(room: str, log_line: str, exclude: "Player | None" = None) -> None:
+async def broadcast_room(room: str, log_line: str, exclude: "Player | None" = None,
+                         chat: bool = False) -> None:
+    """Room-wide line. `chat=True` marks player chatter — skipped for frens who muted it."""
     for w, pl in list(PLAYERS.items()):
         if pl.room == room and pl is not exclude:
+            if chat and pl.chat_muted:
+                continue
             push(pl, log_line)
             try:
                 await show(pl)
@@ -1978,7 +2209,10 @@ async def broadcast_room(room: str, log_line: str, exclude: "Player | None" = No
 
 
 async def dispatch(p: Player, line: str) -> bool:
-    verb, _, rest = line.strip().partition(" ")
+    line = line.strip()
+    if line.startswith("/"):                  # '/home', '/fren invite <name>' — slash style works too
+        line = line[1:].strip()
+    verb, _, rest = line.partition(" ")
     verb = verb.lower()
     rest = rest.strip()
     p.idle_since = time.time()
@@ -1990,22 +2224,22 @@ async def dispatch(p: Player, line: str) -> bool:
 
     # While a question is pending, most input IS the answer — so "proof of work" is judged even
     # if it starts with a command word like 'i' (inventory). A few meta verbs still work mid-question.
-    if (p.boss_pending or p.oracle_pending) and verb not in (
+    if (p.boss_pending or p.trial_pending) and verb not in (
             "quit", "exit", "q", "help", "?", "look", "l", "answer", "admin"):
         if p.boss_pending:
             await boss_judge(p, line.strip())
         else:
-            await oracle_judge(p, line.strip())
+            await trial_judge(p, line.strip())
         return True
 
     if verb in ("quit", "exit", "q"):
         gained = p.xp - p.session_start_xp
         new_runes = len(p.certs) - p.session_start_runes
         lines = [
-            f"Goodnight, {display_name(p)}.",
+            VSTR["goodnight"].format(who=display_name(p)),
             "This session: +" + str(gained) + " xp" + (f", +{new_runes} rune(s)" if new_runes > 0 else "") + ".",
             f"You're Level {p.level} · {p.xp} xp · {len(p.certs)} rune(s).",
-            "Come back and we'll pick up right where you left off. 💜",
+            VSTR["come_back"],
         ]
         if p.web:
             await p.send(json.dumps({"t": "bye", "lines": lines,
@@ -2015,6 +2249,7 @@ async def dispatch(p: Player, line: str) -> bool:
         return False
     if verb in ("help", "?", "commands"):
         focus_text(p, "How to play", help_lines(p), GREY)
+        push(p, c(GREY, "type naturally, fren — 'sup', 'go down', 'who is the boss' all work"))
     elif verb in ("look", "l"):
         focus_room(p)
     elif verb in ("go", "move", "walk"):
@@ -2022,28 +2257,32 @@ async def dispatch(p: Player, line: str) -> bool:
     elif verb in DIRS or verb in DIR_ALIAS:
         await move(p, DIR_ALIAS.get(verb, verb))
     elif verb == "talk":
-        target = rest.lower() or (ROOMS[p.room]["npcs"][0] if ROOMS[p.room]["npcs"] else "")
-        if target == "oracle" and "oracle" in ROOMS[p.room]["npcs"]:
-            await oracle_open(p)
-        elif target in ("wraith", "boss") and "wraith" in ROOMS[p.room]["npcs"]:
-            await boss_open(p)
+        room_npcs = get_room(p.room)["npcs"]
+        target = _match_npc(rest.lower(), room_npcs) or (room_npcs[0] if room_npcs else None)
+        if target:
+            npc = NPCS[target]
+            await (boss_open(p, target) if npc["kind"] == "boss" else trial_open(p, target))
         else:
             push(p, c(GREY, "there's no one by that name here"))
     elif verb == "answer":
         if p.boss_pending:
             await boss_judge(p, rest)
-        elif p.oracle_pending:
-            await oracle_judge(p, rest)
+        elif p.trial_pending:
+            await trial_judge(p, rest)
         else:
-            push(p, c(GREY, "nothing has asked you a question yet — try  talk oracle  or  challenge"))
+            push(p, c(GREY, "nothing has asked you a question yet — try  talk  or  challenge"))
     elif verb == "ask":
         tgt, _, q = rest.partition(" ")
-        if tgt.lower() == "oracle" and "oracle" in ROOMS[p.room]["npcs"]:
-            await converse_oracle(p, q.strip() or "teach me something about bitcoin")
-        elif "oracle" not in ROOMS[p.room]["npcs"]:
-            push(p, c(GREY, hint_to(p.room, "alcove", "the Oracle") + " — in its Alcove"))
+        room_npcs = get_room(p.room)["npcs"]
+        target = _match_npc(tgt.lower(), room_npcs)
+        teacher = npc_here(p, "socratic")
+        if target and NPCS[target]["kind"] == "socratic":
+            await converse_npc(p, target, q.strip() or "teach me something")
+        elif teacher:
+            await converse_npc(p, teacher[0], rest.strip() or "teach me something")
         else:
-            push(p, c(GREY, "ask whom? try:  ask oracle <your question>"))
+            rid = _npc_room("socratic")
+            push(p, c(GREY, hint_to(p.room, rid, "a teacher") if rid else "no one here teaches — explore, fren"))
     elif verb == "pull":
         await pull(p, rest)
     elif verb == "link":
@@ -2053,10 +2292,13 @@ async def dispatch(p: Player, line: str) -> bool:
     elif verb == "backup":
         await backup_onchain(p)
     elif verb in ("challenge", "fight", "battle"):
-        if "wraith" in ROOMS[p.room]["npcs"]:
-            await boss_open(p)
+        boss = npc_here(p, "boss")
+        if boss:
+            await boss_open(p, boss[0])
         else:
-            push(p, c(GREY, "nothing to challenge here — " + hint_to(p.room, "dungeon", "the Proof Dungeon")))
+            rid = _npc_room("boss")
+            hint = hint_to(p.room, rid, get_room(rid)["title"]) if rid else "this verse has no boss yet"
+            push(p, c(GREY, "nothing to challenge here — " + hint))
     elif verb in ("stats", "attributes", "attr", "level"):
         await show_attributes(p)
     elif verb in ("examine", "inspect", "x"):
@@ -2068,15 +2310,31 @@ async def dispatch(p: Player, line: str) -> bool:
     elif verb == "say":
         if rest:
             who = f"@{p.fren_tag}" if p.fren_tag else p.name
-            if p.muted:                                   # muted: your says stay local
+            if not GAME_CHAT:                             # node-wide kill switch
+                push(p, c(GREY, "game chat is off on this node — the operator can turn it back on"))
+            elif p.chat_muted:
+                push(p, c(GREY, "you have game chat muted —  chat on  to speak"))
+            elif p.muted or chat_blocked(p):              # operator moderation / @tag restriction
                 push(p, c(GREEN, "you say: ") + c(BOLD, rest) + c(GREY, "  (muted — local only)"))
             else:
                 push(p, c(GREEN, "you say: ") + c(BOLD, rest) + (c(GREY, "  (→ matrix)") if CHAT_MATRIX else ""))
-                await broadcast_room(p.room, c(CYAN, f"{who} says: ") + c(BOLD, rest), exclude=p)
+                await broadcast_room(p.room, c(CYAN, f"{who} says: ") + c(BOLD, rest), exclude=p, chat=True)
                 if CHAT_MATRIX:
                     asyncio.create_task(forward_chat_to_matrix(p.room, who, rest))
         else:
             push(p, c(GREY, "say what?"))
+    elif verb == "chat":
+        want = rest.lower().strip()
+        if want in ("off", "mute", "0"):
+            p.chat_muted = True
+            await asyncio.to_thread(STORE.set_feature, "pref:" + p.name, "chat_off", True)
+            push(p, c(GREY, "game chat muted for you — others' says won't reach you.  chat on  to undo"))
+        elif want in ("on", "unmute", "1"):
+            p.chat_muted = False
+            await asyncio.to_thread(STORE.set_feature, "pref:" + p.name, "chat_off", False)
+            push(p, c(GREEN, "game chat ON for you — welcome back to the floor, fren"))
+        else:
+            push(p, c(GREY, f"your game chat is {'muted' if p.chat_muted else 'on'} —  chat on|off"))
     elif verb in ("certs", "runes", "certificates"):
         await show_certs(p)
     elif verb in ("inventory", "inv", "i"):
@@ -2084,10 +2342,33 @@ async def dispatch(p: Player, line: str) -> bool:
                    (["   · " + it for it in p.inventory] if p.inventory else ["   nothing but curiosity"]), GREEN)
     elif verb == "who":
         push(p, c(GREEN, f"online ({len(PLAYERS)}): ") + ", ".join((f"@{pl.fren_tag}" if pl.fren_tag else pl.name) for pl in PLAYERS.values()))
+    elif verb == "home":
+        await go_home(p)
+    elif verb == "rename" and rest.lower().startswith("room"):
+        await rename_room(p, rest[4:].strip())
+    elif verb == "invite":
+        await invite_fren(p, rest)
+    elif verb == "visit":
+        await visit_fren(p, rest)
+    elif verb == "fren":
+        sub, _, arg = rest.partition(" ")
+        sub, arg = sub.lower().strip(), arg.strip()
+        if sub == "invite":
+            await invite_fren(p, arg)
+        elif sub == "visit":
+            await visit_fren(p, arg)
+        elif sub in ("add", "link"):
+            await link_identity(p, "fren " + arg)
+        else:
+            push(p, c(GREY, "fren what?  /fren invite <name> · /fren visit <name> · /fren add <name>"))
+    elif verb == "gallery":
+        await show_gallery(p)
+    elif verb == "view":
+        await view_piece(p, rest)
     elif p.boss_pending:
         await boss_judge(p, line.strip())
-    elif p.oracle_pending:
-        await oracle_judge(p, line.strip())
+    elif p.trial_pending:
+        await trial_judge(p, line.strip())
     else:
         await interpret(p, line)          # the flexible path — heuristics, NPC chat, then the LLM
     return True
@@ -2095,7 +2376,7 @@ async def dispatch(p: Player, line: str) -> bool:
 
 async def move(p: Player, direction: str) -> None:
     direction = DIR_ALIAS.get(direction.lower(), direction.lower())
-    exits = ROOMS[p.room]["exits"]
+    exits = get_room(p.room)["exits"]
     if direction in exits:
         who = f"@{p.fren_tag}" if p.fren_tag else p.name
         await broadcast_room(p.room, c(GREY, f"{who} heads {direction}."), exclude=p)
@@ -2104,7 +2385,7 @@ async def move(p: Player, direction: str) -> None:
         await broadcast_room(p.room, c(GREY, f"{who} arrives."), exclude=p)
         focus_room(p)
     else:
-        push(p, c(GREY, "you can't go that way, fren — exits: "
+        push(p, c(GREY, VSTR["cant_go"] + " — exits: "
                   + ", ".join(f"{DIR_GLYPH[d]} {d}" for d in exits)))
 
 
@@ -2241,13 +2522,16 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         p.room, p.inventory, p.wallet = data["room"], data["inventory"], data["wallet"]
         p.nostr, p.space, p.fren_tag = data["nostr"], data["space"], data["fren_tag"]
         p.xp, p.level, p.energy = data["xp"], data["level"], data["energy"]
+        if p.room not in ROOMS and not is_home(p.room):   # saved in another verse's room
+            p.room = VERSE["start_room"]
         p.certs = await asyncio.to_thread(STORE.list_certificates, p.name)
+        p.chat_muted = bool(await asyncio.to_thread(STORE.get_feature, "pref:" + p.name, "chat_off", False))
         p.session_start_xp, p.session_start_runes = p.xp, len(p.certs)
         hello = f"@{p.fren_tag}" if p.fren_tag else p.name
 
         p.in_game = True
         if data["new"]:
-            push(p, c(MAG, f"Welcome, {hello}. The high score is understanding. 💜"))
+            push(p, c(MAG, VSTR["welcome"].format(who=hello)))
             if frens_aware() and not p.fren_tag:
                 focus_text(p, "Welcome to the arcade", [
                     "", f"  This node is connected to frens.earth ({FRENS_URL}).", "",
@@ -2257,21 +2541,31 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 ], AMBER)
             else:
                 focus_room(p)
+            push(p, c(GREY, "psst — you have your own room here:  home   (invite frens over)"))
         else:
             # Welcome back with a summary + a nudge toward next goals (directions computed
             # from where the player actually is, so the hints are never wrong).
-            oracle_hint = hint_to(p.room, "alcove", "the Oracle")
-            boss_hint = hint_to(p.room, "dungeon", "the boss")
+            t_rid, b_rid = _npc_room("socratic"), _npc_room("boss")
+            hints = []
+            if t_rid:
+                hints.append(hint_to(p.room, t_rid, NPCS[get_room(t_rid)["npcs"][0]]["name"]))
+            if b_rid:
+                hints.append(hint_to(p.room, b_rid, "the boss"))
+            rank = verses.rank_for(VERSE, p.level)
             focus_text(p, f"Welcome back, {hello}", [
                 "",
-                f"  Level {p.level} · {p.xp} xp · {len(p.certs)} rune(s) · energy {p.energy}/100",
-                f"  Last seen in: {ROOMS[p.room]['title']}",
+                f"  Level {p.level}{(' · ' + rank) if rank else ''} · {p.xp} xp · "
+                f"{len(p.certs)} rune(s) · energy {p.energy}/100",
+                f"  Last seen in: {get_room(p.room)['title']}",
                 "",
                 "  Good to see you, fren. What would you like to work on next?",
-                f"  {oracle_hint}; {boss_hint} — or just  look  around.",
+                ("  " + "; ".join(hints) + " — or just  look  around.") if hints
+                else "  Just  look  around, fren.",
+                "",
+                "  Your own room awaits:  home   (hang your runes · invite frens)",
                 "",
             ], AMBER)
-            push(p, c(MAG, f"Welcome back, {hello}. Your progress was kept."))
+            push(p, c(MAG, VSTR["welcome_back"].format(who=hello)))
         await broadcast_room(p.room, c(GREY, f"{hello} steps in from the street."), exclude=p)
         event("join", f"{hello} stepped in ({'web' if web else 'terminal'})")
         await show(p)
@@ -2343,8 +2637,12 @@ async def main() -> None:
         bar,
         row("frens.earth", ("connected — " + FRENS_URL) if frens_aware() else "standalone", "")
         + ("" if frens_aware() else c(GREY, "  (set PA_FRENS_URL to connect)")),
+        row("game chat", "ON" if GAME_CHAT else "OFF", GREEN if GAME_CHAT else RED)
+        + c(GREY, "   (chat on|off · chat block <@tag>)"),
         row("matrix chat", "ON" if CHAT_MATRIX else "off", GREEN if CHAT_MATRIX else GREY)
-        + ("" if CHAT_MATRIX else c(GREY, "  (enable:  chat on)")),
+        + ("" if CHAT_MATRIX else c(GREY, "  (enable:  chat matrix on)")),
+        row("demo mode", "ON — practice runes only" if DEMO_MODE else "off", GOLD if DEMO_MODE else GREY)
+        + ("" if not DEMO_MODE else c(GREY, "  (set PA_DEMO_MODE=off after audit)")),
     ]
     if LOCAL_SITE_URL:
         lines.append(row("arcade site", LOCAL_SITE_URL, CYAN))

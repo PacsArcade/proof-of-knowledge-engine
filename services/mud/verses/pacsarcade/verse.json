@@ -1,0 +1,145 @@
+{
+  "id": "pacsarcade",
+  "name": "Pac's Arcade",
+  "tagline": "Proof of Knowledge Engine",
+  "start_room": "entrance",
+  "ranks": [
+    { "level": 1, "title": "Fren" },
+    { "level": 3, "title": "Student" },
+    { "level": 5, "title": "Scholar" },
+    { "level": 8, "title": "Teacher" },
+    { "level": 12, "title": "Oracle's Peer" }
+  ],
+  "home": {
+    "default_name": "{name}'s Quarters",
+    "desc": "Your own corner above the arcade floor. Your soulbound runes hang on the wall beside your gallery; frens you invite can drop by. The stairs back down to the floor are south."
+  },
+  "rooms": {
+    "entrance": {
+      "title": "The Arcade Entrance",
+      "desc": "CRT cabinets hum in the dark, throwing blue light across the carpet. A neon sign buzzes: PAC'S ARCADE — KNOWLEDGE IS THE HIGH SCORE. A worn token-slot glows, waiting. A stairwell descends into a cold blue glow.",
+      "exits": { "north": "alcove", "east": "vault", "down": "dungeon" },
+      "npcs": [],
+      "art": [
+        "  ┌──┐  ┌──┐  ┌──┐     ~ insert token ~",
+        "  │▓▓│  │░░│  │▓▓│",
+        "  └──┘  └──┘  └──┘"
+      ]
+    },
+    "dungeon": {
+      "title": "The Proof Dungeon",
+      "desc": "Down here the hum turns to a drone. Something vast and half-real coils in the dark, flickering between two places at once. It has been trying to spend the same coin twice since before you were born. Type  challenge  to face it.",
+      "exits": { "up": "entrance" },
+      "npcs": ["wraith"],
+      "art": [
+        "        .-~~~-.",
+        "      /  x   x  \\    something flickers between two places",
+        "      \\   \\_/   /    — here, and not-here",
+        "        '-...-'"
+      ]
+    },
+    "alcove": {
+      "title": "The Oracle's Alcove",
+      "desc": "A single cabinet stands apart, its screen a calm violet. A brass plate reads ASK, AND DEMONSTRATE. This is where the Oracle holds court, trading questions for understanding. It never lectures. It only asks.",
+      "exits": { "south": "entrance" },
+      "npcs": ["oracle"],
+      "art": [
+        "         .-\"\"\"-.",
+        "        ( o   o )     the Oracle waits, patient",
+        "         '-...-'"
+      ]
+    },
+    "vault": {
+      "title": "The Puzzle Vault",
+      "desc": "Cold stone, warmer than it looks. A great iron LEVER juts from the wall beside a sealed chest banded in gold. Etched above it: 'What is written here, only you may keep. Lose the scroll, lose the treasure.' The lever is a logic gate — pull it.",
+      "exits": { "west": "entrance" },
+      "npcs": [],
+      "art": [
+        "     .------------.",
+        "     | [#]     ()  |   a sealed chest, banded in gold",
+        "     '------------'"
+      ]
+    }
+  },
+  "npcs": {
+    "oracle": {
+      "name": "the Oracle",
+      "kind": "socratic",
+      "persona": "You are the Oracle at Pac's Arcade — a Socratic bitcoin/nostr educator in a MUD. Say 'fren', never 'friend'. Reply in 1-3 warm sentences and end with a probing question. Never lecture.",
+      "fallback": "I trade in questions, not chit-chat, fren — but I'm listening. Ask me something real about bitcoin or nostr, or say 'talk oracle' to begin the trial. What's on your mind?",
+      "trial": {
+        "question": "With a bitcoin wallet there is ONE secret that is yours alone — lose it and the coins are gone, share it and they're stolen. What is that secret called?",
+        "keys": ["seed", "recovery phrase", "recovery-phrase", "private key", "privatekey", "mnemonic", "seed phrase"],
+        "class": { "class_id": "self-custody", "rune": "PACS•SELF•CUSTODY", "title": "Bitcoin Self-Custody 101" },
+        "xp": 100,
+        "pass_line": "You understood the stakes, not a definition.",
+        "already": "Yes — the seed phrase. But you already hold this rune, fren; I don't etch a truth twice. Wear it well.",
+        "retry": "Close — but feel the weight of it. Not your address, not your PIN. The one string of words that IS the money. Try again:  answer <text>"
+      }
+    },
+    "wraith": {
+      "name": "The Double-Spend Wraith",
+      "kind": "boss",
+      "persona": "You are the Double-Spend Wraith — a bitcoin consensus riddle-boss in a MUD. Menacing but fair; you teach through riddles about double-spends, mining and proof of work. Two sentences max.",
+      "question": "\"I am one coin, spent twice. I split the ledger and feast on the confusion. Name the mechanism that forces the whole network to agree on ONE history — and I unravel.\"",
+      "keys": ["proof of work", "proof-of-work", "pow", "mining", "miners", "longest chain", "heaviest chain", "most work", "confirmation", "consensus", "nakamoto", "hash"],
+      "class": { "class_id": "consensus", "rune": "PACS•CONSENSUS", "title": "Bitcoin Consensus 101" },
+      "xp": 150,
+      "energy_win": 20,
+      "energy_miss": -15,
+      "fail_hint": "Think: what does a miner burn to extend the chain, making a rewrite absurdly expensive?   answer <text>",
+      "victory_line": "the Wraith unravels",
+      "already_lines": [
+        "  The Wraith yields — but you've already mastered this truth.",
+        "",
+        "  No XP for a lesson you already own, fren. Come back when there's a",
+        "  NEW boss with something new to teach. (Harder rematch questions and",
+        "  boss riddles are on the way — see docs/ROADMAP.md.)"
+      ],
+      "anim": [
+        ["", "  it is in two places at once...", "", "        .-~~~-.", "      (  x   x  )", "       \\   ^   /", "        '-...-'", ""],
+        ["", "  ...here, and not-here...", "", "    .-~~~-.", "  (  X   X  )", "   \\   >   /", "    '-...-'", ""],
+        ["", "  \"which history is TRUE?\"", "", "         .-~~~-.", "       (  @   @  )", "        \\   O   /", "         '-...-'", ""]
+      ],
+      "defeat_anim": [
+        ["", "  the forks collapse toward one...", "", "        .-~~~-.", "      (  x   x  )", "       \\   _   /", "        '-...-'", ""],
+        ["", "  ...one chain...", "", "         .-~-.", "       (  -   -  )", "        \\  _  /", "         '-.-'", ""],
+        ["", "  the Wraith unravels.", "", "           \\  |  /", "         ==  ONE  ==", "           /  |  \\", "", ""]
+      ]
+    }
+  },
+  "strings": {
+    "welcome": "Welcome, {who}. The high score is understanding. 💜",
+    "welcome_back": "Welcome back, {who}. Your progress was kept.",
+    "cant_go": "you can't go that way, fren",
+    "goodnight": "Goodnight, {who}.",
+    "come_back": "Come back and we'll pick up right where you left off. 💜"
+  },
+  "gallery": [
+    {
+      "title": "pixel ₿",
+      "artist": "the arcade",
+      "art": [
+        "      ▄▄▄▄▄▄",
+        "    ▄█  ▄▄  █▄",
+        "    ██  ▀▀▄  ██",
+        "    ██  ▄▄▀  ██",
+        "    ▀█  ▀▀  █▀",
+        "      ▀▀▀▀▀▀"
+      ]
+    },
+    {
+      "title": "cabinet no. 21",
+      "artist": "the arcade",
+      "art": [
+        "     ┌────────┐",
+        "     │ ▓▓▓▓▓▓ │",
+        "     │ ▓ HI ▓ │",
+        "     │ ▓▓▓▓▓▓ │",
+        "     │  ────  │",
+        "     │ ○    □ │",
+        "     └────────┘"
+      ]
+    }
+  ]
+}

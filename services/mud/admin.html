@@ -438,9 +438,19 @@ button{font-family:var(--pa-font-pixel)}
               <button class="abtn cyanfill" id="bc-send" style="min-height:38px">SEND</button>
             </div>
             <div style="display:flex;align-items:center;gap:10px">
+              <span class="px" style="font-size:9px;color:var(--pa-fg)">GAME CHAT</span>
+              <span class="tk-lbl" style="font-size:7px">NODE-WIDE SAY</span>
+              <button class="abtn" id="gamechat-toggle" style="min-height:30px;margin-left:auto">&mdash;</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
               <span class="px" style="font-size:9px;color:var(--pa-fg)">MATRIX CHAT BRIDGE</span>
               <button class="abtn" id="chat-toggle" style="min-height:30px;margin-left:auto">&mdash;</button>
             </div>
+            <div style="display:flex;gap:8px">
+              <input class="inp" id="restrict-input" placeholder="RESTRICT @TAG FROM CHAT" style="flex:1;min-width:0" autocomplete="off" spellcheck="false">
+              <button class="abtn ghost" id="restrict-add" style="min-height:38px">BLOCK</button>
+            </div>
+            <div id="restrict-list" style="display:flex;flex-wrap:wrap;gap:5px"></div>
             <div style="display:flex;gap:8px">
               <button class="abtn" id="reboot-btn" style="flex:1;min-height:38px">REBOOT NODE</button>
               <button class="abtn ghost" id="shutdown-btn" style="flex:1;min-height:38px">SHUTDOWN</button>
@@ -887,13 +897,24 @@ button{font-family:var(--pa-font-pixel)}
     }).join("");
   }
 
-  /* ---------------- controls: matrix chat toggle ---------------- */
+  /* ---------------- controls: chat toggles + @tag restriction ---------------- */
+  let lastGameChat = null;
   function renderChatToggle(stats){
     lastChatMatrix = !!(stats && stats.chat_matrix);
     const b = $("chat-toggle");
     b.textContent = lastChatMatrix ? "ON" : "OFF";
     b.style.color = lastChatMatrix ? "var(--pa-neon)" : "var(--pa-fg-dim)";
     b.style.borderColor = lastChatMatrix ? "var(--pa-neon)" : "var(--pa-edge)";
+    lastGameChat = (stats && "game_chat" in stats) ? !!stats.game_chat : null;
+    const g = $("gamechat-toggle");
+    if(lastGameChat === null){ g.textContent = "—"; return; }
+    g.textContent = lastGameChat ? "ON" : "OFF";
+    g.style.color = lastGameChat ? "var(--pa-neon)" : "var(--pa-ghost)";
+    g.style.borderColor = lastGameChat ? "var(--pa-neon)" : "var(--pa-ghost)";
+    const blocked = (stats && Array.isArray(stats.chat_blocked)) ? stats.chat_blocked : [];
+    $("restrict-list").innerHTML = blocked.length
+      ? blocked.map(t => `<button class="chip c-ghost" data-chat-allow="${esc(t)}" style="cursor:pointer;background:none" title="click to re-allow @${esc(t)}">@${esc(t)} &#10005;</button>`).join("")
+      : `<span class="tk-lbl" style="font-size:7px">NO RESTRICTED TAGS</span>`;
   }
 
   /* ---------------- backroom feed ---------------- */
@@ -1152,6 +1173,23 @@ button{font-family:var(--pa-font-pixel)}
       if(lastChatMatrix == null) return;
       const next = !lastChatMatrix;
       doAction("matrix chat " + (next?"on":"off"), "/chat", { enabled: next });
+    });
+    $("gamechat-toggle").addEventListener("click", () => {
+      if(lastGameChat == null) return;
+      const next = !lastGameChat;
+      if(!next && !confirm("Turn game chat OFF for the whole node? Every fren's says go local-only.")) return;
+      doAction("game chat " + (next?"on":"off"), "/gamechat", { enabled: next });
+    });
+    $("restrict-add").addEventListener("click", () => {
+      const tag = $("restrict-input").value.trim().replace(/^@/,"");
+      if(!tag){ log("restrict", "tag required", true); return; }
+      doAction("restrict @" + tag, "/chat/restrict", { tag, blocked:true });
+      $("restrict-input").value = "";
+    });
+    $("restrict-input").addEventListener("keydown", e => { if(e.key==="Enter") $("restrict-add").click(); });
+    $("restrict-list").addEventListener("click", e => {
+      const b = e.target.closest("[data-chat-allow]"); if(!b) return;
+      doAction("allow @" + b.dataset.chatAllow, "/chat/restrict", { tag:b.dataset.chatAllow, blocked:false });
     });
     $("reboot-btn").addEventListener("click", () => {
       if(confirm("Reboot the P.O.K.E. node? Players will be briefly disconnected."))
