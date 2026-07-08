@@ -76,6 +76,10 @@
     text-shadow:0 0 10px var(--accent);font-size:.9rem;letter-spacing:.04em}
   .panel pre{margin:0;white-space:pre-wrap;word-break:break-word;color:var(--ink);
     font-size:15px;line-height:1.35;text-shadow:0 0 3px #0008}
+  #pmedia:empty{display:none}
+  #pmedia{margin:0 0 .7rem}
+  #pmedia img,#pmedia video{max-width:100%;max-height:260px;border:1px solid var(--line);
+    border-radius:8px;box-shadow:0 0 18px -6px var(--accent);display:block}
   .exits{display:flex;gap:.4rem;flex-wrap:wrap}
   .door{cursor:pointer;user-select:none;background:var(--panel);border:1px solid var(--accent);color:var(--accent);
     border-radius:8px;padding:.25rem .6rem;font-size:.85rem;text-shadow:0 0 8px var(--accent)}
@@ -126,7 +130,7 @@
 
   <section id="game">
     <div class="hud" id="hud"></div>
-    <div class="panel" id="panel"><div class="title" id="ptitle"></div><pre id="body"></pre></div>
+    <div class="panel" id="panel"><div class="title" id="ptitle"></div><div id="pmedia"></div><pre id="body"></pre></div>
     <div class="exits" id="exits"></div>
     <div class="log" id="log"></div>
   </section>
@@ -246,12 +250,21 @@
     document.documentElement.style.setProperty('--accent', accent);
     const h=m.hud||{};
     $('hud').innerHTML =
-      `<span class="chip">Lv <b>${h.level??1}</b></span>`+
+      `<span class="chip">Lv <b>${h.level??1}</b>${h.rank?` <span style="color:var(--amber)">${escapeHtml(h.rank)}</span>`:''}</span>`+
       `<span class="chip">✦ ${h.xp??0} xp <span class="bar"><i style="width:${(h.xp_into??0)}%"></i></span></span>`+
       `<span class="chip">🎓 <b>${h.runes??0}</b></span>`+
       `<span class="chip energy">⚡ <span class="bar"><i style="width:${(h.energy??100)}%"></i></span></span>`+
       `<span class="spacer"></span><span class="chip">${m.who||''} · ${m.room||''}</span>`;
     $('ptitle').textContent = m.title||m.room||'';
+    // real ordinal/rune media when the node allows it (terminals always get the ASCII rendition)
+    const md = m.media;
+    if(md && md.url && /^https?:/i.test(md.url)){
+      $('pmedia').innerHTML = md.kind==='video'
+        ? `<video src="${encodeURI(md.url)}" autoplay loop muted playsinline></video>`
+        : `<img src="${encodeURI(md.url)}" alt="">`;
+    }else{
+      $('pmedia').innerHTML = '';
+    }
     $('body').textContent = (m.body||[]).join('\n');
     $('exits').innerHTML='';
     (m.exits||[]).forEach(d=>{ const el=document.createElement('div'); el.className='door'; el.textContent=ARROW[d]||d;
