@@ -266,6 +266,17 @@ BOOT_LINES = [
     ("ORACLE LINK .........", "VIOLET"),
 ]
 
+# A little Commodore-64 love: the cassette-era load ritual, played before the logo.
+C64_LINES = [
+    ("**** POKE BASIC V2 · 64K RAM FREE ****", 0.7),
+    ("READY.", 0.6),
+    ('LOAD "POKEMUD",8,1', 0.9),
+    ("SEARCHING FOR POKEMUD", 1.0),
+    ("LOADING", 1.2),
+    ("READY.", 0.6),
+    ("RUN", 0.7),
+]
+
 
 def make_banner(accent: str = BOLD + GOLD) -> str:
     """The login banner. `accent` colors the POKEMUD logo — cycled to make it glimmer."""
@@ -277,6 +288,7 @@ def make_banner(accent: str = BOLD + GOLD) -> str:
         "presents",
         "",
         *LOGO,
+        "· multi user dungeon ·",
         "",
         tagline,
         "",
@@ -304,9 +316,38 @@ BANNER = make_banner()
 # Colors the title cycles through on login so PAC'S ARCADE / POKEMUD glimmers.
 SHIMMER = [BOLD + GOLD, BOLD + CYAN, BOLD + MAG, BOLD + AMBER, BOLD + GREEN, BOLD + GOLD]
 
-def help_lines(p: "Player") -> list[str]:
-    """The help panel — grouped, two-column, and room-aware (the boss hint is computed
-    from where the player actually stands, so 'down' is never a lie)."""
+HELP_PAGES = 2
+
+
+def help_lines(p: "Player", page: int = 1) -> list[str]:
+    """Paginated help — every command column lines up at 20 chars, and the boss hint is
+    computed from where the player stands, so 'down' is never a lie. `help 2` / `next`
+    turn the page."""
+    if page == 2:
+        return [
+            "  ▸ IDENTITY",
+            "   link fren <name>     claim your @fren",
+            "   verify <code>        confirm the pairing code",
+            "   link nostr <npub1…>  bind your nostr identity",
+            "   link space <@name>   bind your spaces name",
+            "   backup               anchor your progress on-chain",
+            "",
+            "  ▸ CHAT",
+            "   say <msg>            talk to the room",
+            "   who                  see who's online",
+            "   chat on|off          mute game chat, just for you",
+            "",
+            "  ▸ HOME & ART",
+            "   home  (/home)        go to your own room",
+            "   rename room <name>   name your room",
+            "   /fren invite <name>  let a fren visit your room",
+            "   /fren visit <name>   drop by a fren's room",
+            "   gallery              the art on display",
+            "   view <n>             stand before a piece",
+            "   quit                 save + leave",
+            "",
+            "  ── page 2/2  ·   help 1  or  next  to loop back ──",
+        ]
     boss_room = _npc_room("boss")
     boss = hint_to(p.room, boss_room, "the boss") if boss_room else "no boss in this verse (yet)"
     t_rid = _npc_room("socratic")
@@ -317,7 +358,8 @@ def help_lines(p: "Player") -> list[str]:
         "   go <dir>  ·  look (l)             look around the room",
         "",
         "  ▸ LEARN",
-        f"   talk {tid:<15} begin the trial  ·  ask {tid} <q>  ask",
+        f"   talk {tid:<15} begin the trial",
+        f"   ask {tid} <q>{' ' * max(1, 13 - len(tid))}ask anything",
         "   answer <text>        reply to a question",
         f"   challenge            {boss}",
         "   pull lever           use a feature in the room",
@@ -325,20 +367,18 @@ def help_lines(p: "Player") -> list[str]:
         "  ▸ YOU",
         "   stats                your level · xp · energy",
         "   profile              your identity card",
-        "   certs · inventory    runes you've earned · what you carry",
+        "   certs                the runes you've earned",
+        "   inventory (i)        what you carry",
         "   examine <name>       look at another fren",
         "",
-        "  ▸ IDENTITY",
-        "   link fren <name>     claim your @fren   (then: verify <code>)",
-        "   link nostr|space     bind identities  ·  backup   anchor it",
-        "",
-        "  ▸ CHAT & HOME",
-        "   say <msg> · who      talk to the room · see who's online",
-        "   chat on|off          mute game chat, just for you",
-        "   home  (/home)        your own room · rename room <name>",
-        "   /fren invite|visit <name>    have frens over · drop by",
-        "   gallery · view <n>   the art on display  ·  quit  save+leave",
+        "  ── page 1/2  ·   help 2  or  next  for identity, chat & home ──",
     ]
+
+
+def show_help(p: "Player", page: int = 1) -> None:
+    page = 2 if page == 2 else 1
+    p.help_page = page
+    focus_text(p, f"How to play ({page}/{HELP_PAGES})", help_lines(p, page), GREY)
 
 
 # --- the world (rooms come from the verse pack; home rooms are per-player) ----
@@ -437,6 +477,7 @@ class Player:
         self.energy = 100
         self.trial_pending = None          # socratic-NPC id awaiting an answer
         self.boss_pending = None           # boss id awaiting an answer
+        self.help_page = 1                 # last help page shown ('next' turns it)
         self.focus: dict | None = None     # the window's current panel {title, lines, color}
         self.log: list[str] = []           # message-log strip (transient lines)
         self.connected_at = time.time()
@@ -666,7 +707,7 @@ RESERVED_NAMES = {"help", "quit", "exit", "q", "look", "l", "admin", "boss",
                   "talk", "answer", "ask", "challenge", "fight", "stats", "profile", "certs", "runes",
                   "inventory", "inv", "i", "backup", "link", "verify", "who", "pull", "examine",
                   "home", "rename", "invite", "visit", "gallery", "view", "enter",
-                  "chat", "fren"} | set(NPCS)
+                  "chat", "fren", "next", "more", "load", "run"} | set(NPCS)
 
 
 async def _prompt_again(p: "Player", text: str) -> None:
@@ -2254,8 +2295,10 @@ async def dispatch(p: Player, line: str) -> bool:
             await p.send(CLEAR + c(MAG, "\r\n  " + "\r\n  ".join(lines) + "\r\n"))
         return False
     if verb in ("help", "?", "commands"):
-        focus_text(p, "How to play", help_lines(p), GREY)
-        push(p, c(GREY, "type naturally, fren — 'sup', 'go down', 'who is the boss' all work"))
+        page = 2 if rest.strip().startswith("2") else 1
+        show_help(p, page)
+        if page == 1:
+            push(p, c(GREY, "type naturally, fren — 'sup', 'go down', 'who is the boss' all work"))
     elif verb in ("look", "l"):
         focus_room(p)
     elif verb in ("go", "move", "walk"):
@@ -2356,6 +2399,8 @@ async def dispatch(p: Player, line: str) -> bool:
         await invite_fren(p, rest)
     elif verb == "visit":
         await visit_fren(p, rest)
+    elif verb in ("next", "more") and p.focus and str(p.focus.get("title", "")).startswith("How to play"):
+        show_help(p, p.help_page % HELP_PAGES + 1)
     elif verb == "fren":
         sub, _, arg = rest.partition(" ")
         sub, arg = sub.lower().strip(), arg.strip()
@@ -2390,6 +2435,12 @@ async def move(p: Player, direction: str) -> None:
         await asyncio.to_thread(STORE.save_player, p.name, p.room, p.inventory)
         await broadcast_room(p.room, c(GREY, f"{who} arrives."), exclude=p)
         focus_room(p)
+    elif len(exits) == 1:
+        # One door out (home rooms, dead ends): any direction takes it, with a nudge —
+        # so 'd' in your quarters walks you out instead of arguing about south vs down.
+        only = next(iter(exits))
+        push(p, c(GREY, f"one way out — {DIR_GLYPH[only]} {only} it is, fren"))
+        await move(p, only)
     else:
         push(p, c(GREY, VSTR["cant_go"] + " — exits: "
                   + ", ".join(f"{DIR_GLYPH[d]} {d}" for d in exits)))
@@ -2446,8 +2497,8 @@ async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None"
             skipped = True
             return
         line = clean_line(raw)
-        # 'insert coin' / 'coin' / 'start' mean "let me in", not "call me that"
-        if line and line.lower() not in ("insert coin", "coin", "start", "play"):
+        # 'insert coin' / 'coin' / 'start' / 'load' / 'run' mean "let me in", not "call me that"
+        if line and line.lower() not in ("insert coin", "coin", "start", "play", "load", "run"):
             pre = line
         skipped = True
 
@@ -2456,8 +2507,16 @@ async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None"
         if skipped:
             break
         await p.send("   " + c(GREY, "▓ " + label + " ") + c(GREEN, status) + "\r\n")
-        await pause(0.22)
-    await pause(0.35)
+        await pause(0.45)
+    await pause(0.5)
+    if not skipped:                                   # the C64 load ritual 💾
+        await p.send("\r\n")
+        for text, hold in C64_LINES:
+            if skipped:
+                break
+            await p.send("   " + c(CYAN, text) + "\r\n")
+            await pause(hold)
+    await pause(0.4)
     for col in SHIMMER:                               # the logo glimmers ✨
         if skipped:
             break
@@ -2470,7 +2529,7 @@ async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None"
     blinks = 0
     while not skipped and blinks < 360:
         coin = c(BOLD + GOLD, "▶ INSERT COIN ◀") if blinks % 2 == 0 else c(GREY, "  INSERT COIN  ")
-        await p.send("\r" + " " * 10 + coin + c(GREY, "   — press ENTER, fren") + "\x1b[K")
+        await p.send("\r" + " " * 10 + coin + c(GREY, "   — ENTER or type RUN, fren") + "\x1b[K")
         await pause(0.5)
         blinks += 1
     await p.send("\r\x1b[K")
