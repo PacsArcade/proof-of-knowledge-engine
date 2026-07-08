@@ -29,6 +29,7 @@ import sys
 import textwrap
 import threading
 import time
+import unicodedata
 import urllib.request
 
 try:
@@ -103,24 +104,129 @@ def c(color: str, s: str) -> str:
     return f"{color}{s}{R}"
 
 
-# --- banner (simple + aligned; shown once before the game window) ------------
+# --- display width (emoji/wide-glyph aware, so the frame border never jogs) ----
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_ZERO_WIDTH = {0x200D, 0xFE0E, 0xFE0F}          # ZWJ + variation selectors
+# Terminal-double-wide singletons outside the emoji planes (⭐ ⚡ ❤ …).
+_WIDE_ONES = {0x2B50, 0x26A1, 0x2764, 0x2B55, 0x267B}
+
+
+def _ch_width(ch: str) -> int:
+    o = ord(ch)
+    if o in _ZERO_WIDTH or unicodedata.combining(ch):
+        return 0
+    if 0x1F000 <= o <= 0x1FAFF or o in _WIDE_ONES:
+        return 2
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def dwidth(s: str) -> int:
+    return sum(_ch_width(ch) for ch in s)
+
+
+def dw_crop(s: str, width: int) -> str:
+    out, w = [], 0
+    for ch in s:
+        cw = _ch_width(ch)
+        if w + cw > width:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
+
+
+def dw_ljust(s: str, width: int) -> str:
+    s = dw_crop(s, width)
+    return s + " " * (width - dwidth(s))
+
+
+def ansi_crop(s: str, width: int) -> str:
+    """Crop a COLORED string to a display width — escape codes pass through free,
+    and a cropped line closes its colors so nothing bleeds into the next row."""
+    out, w, i = [], 0, 0
+    while i < len(s):
+        m = _ANSI.match(s, i)
+        if m:
+            out.append(m.group())
+            i = m.end()
+            continue
+        cw = _ch_width(s[i])
+        if w + cw > width - 1:                    # reserve one cell for the ellipsis
+            return "".join(out) + R + c(GREY, "…")
+        out.append(s[i])
+        w += cw
+        i += 1
+    return "".join(out)
+
+
+# One glyph family for movement everywhere: filled = compass, hollow = vertical.
+DIR_GLYPH = {"north": "▲", "south": "▼", "east": "►", "west": "◄", "up": "△", "down": "▽"}
+
+
+def exits_line(room: dict) -> str:
+    return "Exits: " + " · ".join(f"{DIR_GLYPH.get(d, '·')} {d}" for d in room["exits"])
+
+
+def dir_to(src: str, dst: str) -> "str | None":
+    """First-step direction from src toward dst over the room graph (BFS), or None if
+    unreachable / already there. Keeps every hint truthful from ANY room."""
+    if src == dst:
+        return None
+    seen, queue = {src}, [(src, None)]
+    while queue:
+        room, first = queue.pop(0)
+        for d, nxt in ROOMS.get(room, {}).get("exits", {}).items():
+            step = first or d
+            if nxt == dst:
+                return step
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append((nxt, step))
+    return None
+
+
+def hint_to(src: str, dst: str, label: str) -> str:
+    """'the Oracle is ▲ north of here' — or 'right here' when you've arrived."""
+    d = dir_to(src, dst)
+    if d is None:
+        return f"{label} is right here"
+    return f"{label} is {DIR_GLYPH[d]} {d} of here"
+
+
+# --- banner + attract mode (shown once before the game window) ---------------
+# Block-letter logo — narrow glyphs only (█ ▀ ▄ are single-cell) so it centers cleanly.
+LOGO = [
+    "█▀▀▄ █▀▀█ █ ▄▀ █▀▀▀ █▀▄▀█ █  █ █▀▀▄",
+    "█▄▄▀ █  █ ██   █▀▀  █ ▀ █ █  █ █  █",
+    "█    █▄▄█ █ ▀▄ █▄▄▄ █   █ █▄▄█ █▄▄▀",
+]
+
+BOOT_LINES = [
+    ("CRT POWER ...........", "OK"),
+    ("COIN MECH ...........", "OK"),
+    ("KNOWLEDGE CORE ......", "LOADED"),
+    ("ORACLE LINK .........", "VIOLET"),
+]
+
+
 def make_banner(accent: str = BOLD + GOLD) -> str:
-    """The login banner. `accent` colors the POKEMUD title — cycled to make it glimmer."""
+    """The login banner. `accent` colors the POKEMUD logo — cycled to make it glimmer."""
     lines = [
         "",
         "PAC'S  ARCADE",
         "presents",
         "",
-        "P  O  K  E  M  U  D",
+        *LOGO,
+        "",
         "Proof of Knowledge Engine",
         "",
         "type  help  for the controls   ·   type  quit  to leave",
         "",
     ]
-    width = max(len(l) for l in lines) + 8
+    width = max(dwidth(l) for l in lines) + 8
     out = [c(MAG, "╔" + "═" * width + "╗")]
     for ln in lines:
-        if "P  O  K  E" in ln:
+        if ln in LOGO:
             col = accent
         elif "PAC'S" in ln:
             col = BOLD + AMBER
@@ -128,7 +234,8 @@ def make_banner(accent: str = BOLD + GOLD) -> str:
             col = AMBER
         else:
             col = GREY
-        out.append(c(MAG, "║") + c(col, ln.center(width)) + c(MAG, "║"))
+        pad = width - dwidth(ln)
+        out.append(c(MAG, "║") + c(col, " " * (pad // 2) + ln + " " * (pad - pad // 2)) + c(MAG, "║"))
     out.append(c(MAG, "╚" + "═" * width + "╝"))
     return "\n" + "\n".join(out) + "\n" + c(GREY, "  a study buddy for your cyberdeck  ·  welcome, fren. 💜") + "\n"
 
@@ -137,21 +244,36 @@ BANNER = make_banner()
 # Colors the title cycles through on login so PAC'S ARCADE / POKEMUD glimmers.
 SHIMMER = [BOLD + GOLD, BOLD + CYAN, BOLD + MAG, BOLD + AMBER, BOLD + GREEN, BOLD + GOLD]
 
-# Kept to <=12 lines and <=68 cols each so it never overflows the framed window.
-HELP_LINES = [
-    "",
-    "  Move:  north south east west up down    (n/s/e/w shortcuts)",
-    "  look (l) ....... look around the room",
-    "  talk oracle .... speak with the Oracle   ·   answer <text>",
-    "  ask oracle <q>    challenge    (the boss is 'down' from here)",
-    "  pull lever ..... use a feature in the room",
-    "  stats / examine <name>    your attributes / see a fren",
-    "  link fren <name>    verify <code>    backup    (identity)",
-    "  profile · certs · inventory · who · say <msg> · quit",
-    "",
-    "  Type naturally - 'sup', 'go down', 'who's the boss' all work.",
-    "",
-]
+def help_lines(p: "Player") -> list[str]:
+    """The help panel — grouped, two-column, and room-aware (the boss hint is computed
+    from where the player actually stands, so 'down' is never a lie)."""
+    boss = hint_to(p.room, "dungeon", "the boss")
+    return [
+        "  ▸ MOVE",
+        "   north south east west up down     shortcuts: n s e w u d",
+        "   go <dir>  ·  look (l)             look around the room",
+        "",
+        "  ▸ LEARN",
+        "   talk oracle          begin the Oracle's trial",
+        "   ask oracle <q>       ask anything  ·  answer <text>  reply",
+        f"   challenge            {boss}",
+        "   pull lever           use a feature in the room",
+        "",
+        "  ▸ YOU",
+        "   stats · profile      your attributes / your identity card",
+        "   certs · inventory    your runes / what you carry",
+        "   examine <name>       look at another fren",
+        "",
+        "  ▸ IDENTITY",
+        "   link fren <name>     claim your @fren   (then: verify <code>)",
+        "   link nostr|space     bind identities  ·  backup   anchor it",
+        "",
+        "  ▸ SOCIAL",
+        "   say <msg> · who      talk to the room / see who's online",
+        "   quit                 save + leave",
+        "",
+        "  Type naturally — 'sup', 'go down', 'who is the boss' all work.",
+    ]
 
 
 # --- the world ---------------------------------------------------------------
@@ -293,7 +415,7 @@ def focus_room(p: Player) -> None:
     if others:
         lines.append("Also here: " + ", ".join(others))
     lines.append("")
-    lines.append("Exits: " + ", ".join(room["exits"].keys()))    # also shown as arrows on the frame
+    lines.append(exits_line(room))    # same glyphs as the arrows on the frame border
     p.focus = {"title": room["title"], "lines": lines, "color": GREEN}
 
 
@@ -321,38 +443,52 @@ def _render_border(chars: list[str], doors: set) -> str:
     return out
 
 
+FRAME_MAX_H = 26     # a panel may grow to this many body rows before it truncates
+
+
 def _frame(title: str, body: list[str], exits: dict, color: str) -> list[str]:
     W = BOARD_W
-    rows = list(body)[:BODY_H]
+    # Wrap anything that would overflow the frame; grow the window (up to FRAME_MAX_H)
+    # instead of silently cutting a panel off at BODY_H.
+    rows: list[str] = []
+    for line in body:
+        if dwidth(line) <= W - 2:
+            rows.append(line)
+        else:
+            rows += _wrap(line, W - 4)
+    if len(rows) > FRAME_MAX_H:
+        rows = rows[:FRAME_MAX_H - 1] + ["… (the rest is cut off — this panel is too tall)"]
     while len(rows) < BODY_H:
         rows.append("")
-    mid = BODY_H // 2
+    mid = len(rows) // 2
 
-    # top: cyan ▲ (north, centered) + a cyan ▲up corner (up), then the title
+    # top: ▲ north (centered) + a hollow '△ up' corner tag, then the title
     top = list("═" * W); tdoors = set()
     if "north" in exits:
         top[W // 2] = "▲"; tdoors.add(W // 2)
     if "up" in exits:
-        for j, ch in enumerate("▲up"):
-            top[W - 7 + j] = ch; tdoors.add(W - 7 + j)
+        tag = "△ up"
+        for j, ch in enumerate(tag):
+            top[W - len(tag) - 3 + j] = ch; tdoors.add(W - len(tag) - 3 + j)
     for i, ch in enumerate(f"╡ {title} ╞"):
         if 3 + i < W and (3 + i) not in tdoors:
             top[3 + i] = ch
     out = [c(MAG, "╔") + _render_border(top, tdoors) + c(MAG, "╗")]
 
-    # sides: cyan ◄ / ► doors on the middle row
+    # sides: ◄ / ► compass doors on the middle row
     for i, line in enumerate(rows):
         left = c(CYAN, "◄") if (i == mid and "west" in exits) else c(MAG, "║")
         right = c(CYAN, "►") if (i == mid and "east" in exits) else c(MAG, "║")
-        out.append(left + " " + c(color, line[:W - 2].ljust(W - 2)) + " " + right)
+        out.append(left + " " + c(color, dw_ljust(line, W - 2)) + " " + right)
 
-    # bottom: cyan ▼ (south, centered) + a cyan ▼dn corner (down)
+    # bottom: ▼ south (centered) + a hollow '▽ down' corner tag
     bot = list("═" * W); bdoors = set()
     if "south" in exits:
         bot[W // 2] = "▼"; bdoors.add(W // 2)
     if "down" in exits:
-        for j, ch in enumerate("▼down"):
-            bot[W - 7 + j] = ch; bdoors.add(W - 7 + j)
+        tag = "▽ down"
+        for j, ch in enumerate(tag):
+            bot[W - len(tag) - 3 + j] = ch; bdoors.add(W - len(tag) - 3 + j)
     out.append(c(MAG, "╚") + _render_border(bot, bdoors) + c(MAG, "╝"))
     return out
 
@@ -367,8 +503,10 @@ def render_screen(p: Player) -> str:
     frame = _frame(f["title"], f["lines"], room["exits"], f.get("color", GREEN))
     log = list(p.log)[-LOG_H:]
     log = [""] * (LOG_H - len(log)) + log            # bottom-align the log
-    parts = [header, hud, ""] + frame + ["", c(GREY, "  ── messages ──")]
-    parts += ["  " + l for l in log]
+    # Crop every free-form row to the window width — a line that hard-wraps in the
+    # terminal would shift the whole in-place redraw.
+    parts = [ansi_crop(header, BOARD_W + 2), hud, ""] + frame + ["", c(GREY, "  ── messages ──")]
+    parts += ["  " + ansi_crop(l, BOARD_W) for l in log]
     parts += ["", c(AMBER, f"  {who} ") + c(GREY, "» ")]
     out = HOME
     for ln in parts[:-1]:
@@ -380,7 +518,6 @@ def render_screen(p: Player) -> str:
 # --- JSON render mode (browser clients) --------------------------------------
 # Telnet clients get ANSI (render_screen). Browser clients get a STRUCTURED screen model, so the
 # web client can render it as real UI — glow, animation, sound — instead of interpreting ANSI.
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _COLOR_NAME = {GREEN: "green", AMBER: "amber", CYAN: "cyan", MAG: "magenta",
                GREY: "grey", RED: "red", GOLD: "gold"}
 
@@ -654,8 +791,9 @@ async def show_profile(p: Player) -> None:
 
 async def show_certs(p: Player) -> None:
     if not p.certs:
+        where = hint_to(p.room, "alcove", "The Oracle's Alcove")
         focus_text(p, "Your runes", ["", "  No class runes yet.", "",
-                                      "  The Oracle's Alcove (north) is where they're earned. 🎓"], GOLD)
+                                      f"  {where} — runes are earned there. 🎓"], GOLD)
         return
     lines = ["", "  Your soulbound class runes:", ""]
     for cert in p.certs:
@@ -1139,7 +1277,7 @@ async def show_attributes(p: Player) -> None:
         f"  @fren     : {('@' + p.fren_tag) if p.fren_tag else 'unlinked  (link fren <name>)'}",
         "",
         "  Earn xp from the Oracle and by defeating bosses.",
-        "  The dungeon is  down  from the entrance.  See a fren:  examine <name>",
+        f"  {hint_to(p.room, 'dungeon', 'The dungeon')}.  See a fren:  examine <name>",
     ], CYAN)
 
 
@@ -1646,7 +1784,7 @@ async def dispatch(p: Player, line: str) -> bool:
             await p.send(CLEAR + c(MAG, "\r\n  " + "\r\n  ".join(lines) + "\r\n"))
         return False
     if verb in ("help", "?", "commands"):
-        focus_text(p, "How to play", HELP_LINES, GREY)
+        focus_text(p, "How to play", help_lines(p), GREY)
     elif verb in ("look", "l"):
         focus_room(p)
     elif verb in ("go", "move", "walk"):
@@ -1673,7 +1811,7 @@ async def dispatch(p: Player, line: str) -> bool:
         if tgt.lower() == "oracle" and "oracle" in ROOMS[p.room]["npcs"]:
             await converse_oracle(p, q.strip() or "teach me something about bitcoin")
         elif "oracle" not in ROOMS[p.room]["npcs"]:
-            push(p, c(GREY, "the Oracle is in its Alcove (north from the entrance)"))
+            push(p, c(GREY, hint_to(p.room, "alcove", "the Oracle") + " — in its Alcove"))
         else:
             push(p, c(GREY, "ask whom? try:  ask oracle <your question>"))
     elif verb == "pull":
@@ -1688,7 +1826,7 @@ async def dispatch(p: Player, line: str) -> bool:
         if "wraith" in ROOMS[p.room]["npcs"]:
             await boss_open(p)
         else:
-            push(p, c(GREY, "nothing to challenge here — the dungeon is  down  from the entrance"))
+            push(p, c(GREY, "nothing to challenge here — " + hint_to(p.room, "dungeon", "the Proof Dungeon")))
     elif verb in ("stats", "attributes", "attr", "level"):
         await show_attributes(p)
     elif verb in ("examine", "inspect", "x"):
@@ -1736,7 +1874,8 @@ async def move(p: Player, direction: str) -> None:
         await broadcast_room(p.room, c(GREY, f"{who} arrives."), exclude=p)
         focus_room(p)
     else:
-        push(p, c(GREY, "you can't go that way, fren"))
+        push(p, c(GREY, "you can't go that way, fren — exits: "
+                  + ", ".join(f"{DIR_GLYPH[d]} {d}" for d in exits)))
 
 
 async def pull(p: Player, thing: str) -> None:
@@ -1772,10 +1911,57 @@ def clean_line(raw: bytes) -> str:
     return out.decode("utf-8", "replace").strip()
 
 
+async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None":
+    """The arcade boot + attract sequence (terminal clients). Any keypress skips ahead;
+    if the player typed an actual word, it's returned to feed the name prompt."""
+    pre: "str | None" = None
+    skipped = False
+
+    async def pause(delay: float) -> None:
+        nonlocal pre, skipped
+        if skipped:
+            return
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=delay)
+        except asyncio.TimeoutError:
+            return
+        if not raw and reader.at_eof():
+            skipped = True
+            return
+        line = clean_line(raw)
+        if line:
+            pre = line
+        skipped = True
+
+    await p.send(CLEAR + "\r\n\r\n")
+    for label, status in BOOT_LINES:                  # a tiny CRT boot check
+        if skipped:
+            break
+        await p.send("   " + c(GREY, "▓ " + label + " ") + c(GREEN, status) + "\r\n")
+        await pause(0.22)
+    await pause(0.35)
+    for col in SHIMMER:                               # the logo glimmers ✨
+        if skipped:
+            break
+        await p.send(CLEAR + make_banner(col))
+        await pause(0.16)
+    if skipped:
+        await p.send(CLEAR + make_banner())
+    for i in range(4):                                # INSERT COIN blink
+        if skipped:
+            break
+        coin = c(BOLD + GOLD, "▶ INSERT COIN ◀") if i % 2 == 0 else c(GREY, "  INSERT COIN  ")
+        await p.send("\r" + " " * 14 + coin + "\x1b[K")
+        await pause(0.4)
+    await p.send("\r\x1b[K")
+    return pre
+
+
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, web: bool = False) -> None:
     p = Player(writer)
     p.web = web
     PLAYERS[writer] = p
+    pre_name: "str | None" = None
     try:
         if web:
             # The browser renders its own (magical) login; just hand it the node info + a name prompt.
@@ -1784,16 +1970,19 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                      "prompt": "By what name shall the arcade know you, fren?"}))
         else:
             await p.send(RESIZE)
-            for col in SHIMMER:                       # the banner glimmers on login ✨
-                await p.send(CLEAR + make_banner(col))
-                await asyncio.sleep(0.16)
+            pre_name = await attract_intro(p, reader)
+            if reader.at_eof():
+                return
             await p.send(c(AMBER, "\nBy what name shall the arcade know you, fren? "))
         # --- name entry: reject command words as names (so no one is called "help"/"quit") ---
         for _ in range(4):
-            raw = await reader.readline()
-            if not raw and reader.at_eof():
-                return
-            name = clean_line(raw)
+            if pre_name:                              # typed during the attract sequence
+                name, pre_name = pre_name, None
+            else:
+                raw = await reader.readline()
+                if not raw and reader.at_eof():
+                    return
+                name = clean_line(raw)
             if not name:
                 await _prompt_again(p, "a name, fren?")
                 continue
@@ -1839,14 +2028,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             else:
                 focus_room(p)
         else:
-            # Welcome back with a summary + a nudge toward next goals.
+            # Welcome back with a summary + a nudge toward next goals (directions computed
+            # from where the player actually is, so the hints are never wrong).
+            oracle_hint = hint_to(p.room, "alcove", "the Oracle")
+            boss_hint = hint_to(p.room, "dungeon", "the boss")
             focus_text(p, f"Welcome back, {hello}", [
                 "",
                 f"  Level {p.level} · {p.xp} xp · {len(p.certs)} rune(s) · energy {p.energy}/100",
                 f"  Last seen in: {ROOMS[p.room]['title']}",
                 "",
                 "  Good to see you, fren. What would you like to work on next?",
-                "  Ask the Oracle (north), face a boss (down), or just  look  around.",
+                f"  {oracle_hint}; {boss_hint} — or just  look  around.",
                 "",
             ], AMBER)
             push(p, c(MAG, f"Welcome back, {hello}. Your progress was kept."))
