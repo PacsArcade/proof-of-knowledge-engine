@@ -1532,6 +1532,7 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             b = ban_info(a["name"])
             return self._reply(200, {
                 "name": a["name"], "fren": a["fren_tag"], "level": a["level"], "xp": a["xp"],
+                "rank": verses.rank_for(VERSE, a["level"]),
                 "runes": a["runes"], "verse": VERSE["id"], "world": WORLD,
                 "online": any(pl.name == a["name"] for pl in PLAYERS.values()),
                 "demo_mode": DEMO_MODE,
