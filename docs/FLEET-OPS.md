@@ -217,9 +217,25 @@ Branch **`feat/fleet-ops`** (off `main`), author `pac@pacsarcade.org`, **not mer
   (claim→resolve→commendation, vouch, bot-vouch 403, self/double-vouch 409, audit, budget, snapshot).
 - **Console** (`services/mud/admin.html`): FLEET OPS panel (Duty Roster, Rank Track, Commendations,
   Fun Budget gauge, stardate), header **LCARS**/ARCADE theme chips + **SOUND** (WebAudio, synthesized),
-  per-verse theming via `data-verse`. ⚠️ **NOT yet browser-validated** — Pac couldn't reach the demo
-  (localhost-only). Loads/serves fine; needs one human (or headless) click-through to confirm the JS
-  renders. Risk is low (plain string-concat JS, reuses the existing `apiGet/apiPost/refresh` seam).
+  per-verse theming via `data-verse`. ✅ **BROWSER-VALIDATED 2026-07-08** — driven headless via Chrome
+  DevTools Protocol (zero-install: Node's built-in WebSocket + a fetch shim). Seeded a demo roster
+  over the rails, then confirmed in-browser: gate accepts token; panel renders 5 tickets with correct
+  kind-chips (INC/PRB/CHG/REQ/REV) + per-status buttons (CLAIM/RESOLVE/VOUCH); counts 3 open·1
+  claimed·1 done; Rank Track shows the review-board gate (points met, `vouches 0/2` holding promotion);
+  Commendations leaderboard with the `poke-engineer` BOT tag; Fun Budget gauge at 32.8%; stardate =
+  897432 in both ticker + panel. **LCARS retheme** flips `--pa-*` tokens (cyan #00FFFF → LCARS orange
+  #ff9966) markup-free + rounds the pills; **SOUND** toggles + persists (`poke_sound`); **RUN AUDIT**
+  executes live through `apiPost` (Chief Engineer AMBER, 5 findings, recompute-from-raw-signal). Zero
+  JS console errors. Screenshots in scratchpad (`console-arcade/lcars/audit.png`).
+- **Clickable artifact (for review off-box, e.g. from the RV):** a self-contained *offline mirror* of
+  the whole console — the real `admin.html` with a `fetch` shim that serves a frozen snapshot of a live
+  regtest node and mutates it on click (CLAIM/RESOLVE/VOUCH move tickets, the review board promotes a
+  peer, RUN AUDIT renders, budget + themes + sound all work). Published as a private Claude artifact
+  ("POKE Fleet Ops · Node Console (offline mirror)", 🖖). Rebuild: `scratchpad/build_artifact.py`
+  (assembles from `admin.html` + a captured `snapshot.json`); it strips the doc wrappers and bakes the
+  shim — re-run after any `admin.html` change to refresh the mirror. Validated harness-wrapped too
+  (CSS-reset-safe). NOTE: the mirror is a demo, not the product — the resolved mission is reassigned to
+  a peer so the (anti-self-vouch) board mechanic is demonstrable.
 
 ### Run / test the node (dev, regtest, SQLite)
 ```bash
@@ -237,6 +253,8 @@ Seed a demo roster by POSTing (admin token header `X-POKE-Admin-Token: fleetdemo
 to invalid UTF-8 and the server falls back to defaults (a shell artifact, not a bug).
 
 ### Next (v2/v3 — see §8)
-Browser-validate the console → org `/console` read-view → Academy (ITIL 4 Foundation; the pacBOT
-agent already staged "ITIL 5 Foundation" study guides in pacBOT's reference shelf) → Fun Budget
-disbursement → Ship's Counsel memos → pacBOT proof-of-humanity into the §7 seam.
+~~Browser-validate the console~~ ✅ done → org `/console` read-view → Academy (ITIL 4 Foundation; the
+pacBOT agent already staged "ITIL 5 Foundation" study guides in pacBOT's reference shelf — **do not
+touch pacBOT files**; author our own original, clearly-labeled content per the §5 legal flags) → Fun
+Budget disbursement → Ship's Counsel memos → pacBOT proof-of-humanity into the §7 seam. **Still
+unmerged on `feat/fleet-ops` — merge only on Pac's go.**
