@@ -198,12 +198,45 @@ trusting a reported status field. If `/stats` says "healthy," Engineer re-derive
 
 ---
 
-## 11. Implementation notes (v1 as built)
+## 11. Implementation notes (v1 as built) — READ THIS FIRST if you're picking up
 
-_Filled in as the slice lands so the next agent sees reality, not just intent._
+Branch **`feat/fleet-ops`** (off `main`), author `pac@pacsarcade.org`, **not merged** (merge on Pac's go).
 
-- **Store:** `services/common/world_store.py` — Fleet Ops tables + methods on `SqliteWorldStore`,
-  symmetric `NotImplementedError` stubs on `PostgresWorldStore` (same backend-swap contract).
-- **Server:** `services/mud/server.py` — ladder + helpers, the rails in §4, ingest adapters, and
-  `chief_engineer_audit()`. `poke-engineer` registered in `_EXT_DEFAULTS` (off by default).
-- **Console:** `services/mud/admin.html` — Fleet Ops rail + LCARS theme + WebAudio chirps.
+### Commits (in order)
+1. `docs(fleet-ops): land the Fleet Ops recall token` — this file.
+2. `feat(fleet-ops): Duty Roster persistence in world_store` — `services/common/world_store.py`.
+3. `feat(fleet-ops): server rails, ingest adapters, Chief Engineer` — `services/mud/server.py`.
+4. `feat(fleet-ops): console Fleet Ops rail + LCARS theme` — `services/mud/admin.html`.
+
+### What's built + verified
+- **Store** (`services/common/world_store.py`): Fleet Ops tables + methods on `SqliteWorldStore`;
+  symmetric `NotImplementedError` stubs on `PostgresWorldStore`. **Unit-smoke-tested green.**
+- **Server** (`services/mud/server.py`): ladder + standings + promotion, the §4 rails, ingest
+  (`/knowledge/flag` → Peer-Review), and `chief_engineer_audit()`. `poke-engineer` + `poke-counsel`
+  registered in `_EXT_DEFAULTS` (off by default). **Exercised end-to-end over HTTP — all green**
+  (claim→resolve→commendation, vouch, bot-vouch 403, self/double-vouch 409, audit, budget, snapshot).
+- **Console** (`services/mud/admin.html`): FLEET OPS panel (Duty Roster, Rank Track, Commendations,
+  Fun Budget gauge, stardate), header **LCARS**/ARCADE theme chips + **SOUND** (WebAudio, synthesized),
+  per-verse theming via `data-verse`. ⚠️ **NOT yet browser-validated** — Pac couldn't reach the demo
+  (localhost-only). Loads/serves fine; needs one human (or headless) click-through to confirm the JS
+  renders. Risk is low (plain string-concat JS, reuses the existing `apiGet/apiPost/refresh` seam).
+
+### Run / test the node (dev, regtest, SQLite)
+```bash
+cd services/mud
+PA_MUD_DATA_DIR=/tmp/fleet PA_ADMIN_TOKEN=fleetdemo PA_BLOCK_HEIGHT=897432 \
+PA_MUD_PORT=4880 PA_MUD_ADMIN_PORT=4881 PA_MUD_WS_PORT=4882 python server.py
+# console: http://127.0.0.1:4881/  (gate token: fleetdemo)
+# ports 4000-4002 (and 4100-4102) are often already taken by other nodes — pick free ones.
+# reachability: binds 127.0.0.1 by default. For LAN/remote access set PA_MUD_ADMIN_HOST=0.0.0.0
+# (token-gated, but that's an outward-facing exposure — get Pac's OK first).
+```
+Seed a demo roster by POSTing (admin token header `X-POKE-Admin-Token: fleetdemo`) to
+`/knowledge/flag`, `/roster`, `/roster/<id>/claim|resolve|vouch`, `/commend`, `/budget`,
+`/engineer/audit`. ⚠️ Use **ASCII only** in curl bodies on Windows Git Bash — em-dashes get mangled
+to invalid UTF-8 and the server falls back to defaults (a shell artifact, not a bug).
+
+### Next (v2/v3 — see §8)
+Browser-validate the console → org `/console` read-view → Academy (ITIL 4 Foundation; the pacBOT
+agent already staged "ITIL 5 Foundation" study guides in pacBOT's reference shelf) → Fun Budget
+disbursement → Ship's Counsel memos → pacBOT proof-of-humanity into the §7 seam.
