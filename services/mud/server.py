@@ -65,6 +65,8 @@ os.environ.setdefault("PA_GAMESTATE_SQLITE", os.path.join(DATA_DIR, "gamestate.d
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 import world_store  # noqa: E402
+import bft  # noqa: E402  — Bitcoin Federated Time: block height → calendar (docs/BFT.md)
+import calendar_lore  # noqa: E402  — birthday → 13-month calendar + zodiac (the Observatory)
 import webbridge     # noqa: E402  (same dir as this file — the browser WebSocket bridge)
 import verses        # noqa: E402  (data-driven verse packs — rooms, NPCs, strings, gallery)
 
@@ -91,8 +93,12 @@ except Exception as e:
 
 # --- operator console / admin state ------------------------------------------
 SERVER_START = time.time()
-ADMIN_TOKEN = os.environ.get("PA_ADMIN_TOKEN") or secrets.token_hex(4)
+ADMIN_TOKEN = os.environ.get("PA_ADMIN_TOKEN") or secrets.token_hex(32)  # 256-bit (F1: was 32-bit)
 ADMIN_TOKEN_GENERATED = "PA_ADMIN_TOKEN" not in os.environ
+# Distinct BOT credential (F3): bots authenticate with PA_BOT_TOKEN, never the admin token, so the
+# server knows a caller is a bot from *which token authenticated* — not from the spoofable
+# X-POKE-Bot header. Human-only actions (review-board vouches) check the authenticated principal.
+BOT_TOKEN = os.environ.get("PA_BOT_TOKEN") or None
 RUNES_ETCHED = 0
 ADMIN_HTTP_HOST = os.environ.get("PA_MUD_ADMIN_HOST", "127.0.0.1")
 ADMIN_HTTP_PORT = int(os.environ.get("PA_MUD_ADMIN_PORT", "4001"))
@@ -1393,10 +1399,68 @@ _ADMIN_HTML = os.path.join(_HERE, "admin.html")
 _WEBCLIENT_HTML = os.path.join(_HERE, "webclient.html")
 
 
+# --- admin auth rate limiting (F1: blunt online brute-force of the token) -----
+_AUTH_FAILS: dict[str, list] = {}          # ip -> [fail_count, window_start_ts]
+_AUTH_MAX_FAILS = int(os.environ.get("PA_ADMIN_MAX_FAILS", "8") or 8)
+_AUTH_WINDOW_S = float(os.environ.get("PA_ADMIN_FAIL_WINDOW", "60") or 60)
+
+
+def _auth_rate_limited(ip: str) -> bool:
+    rec = _AUTH_FAILS.get(ip)
+    if not rec:
+        return False
+    count, start = rec
+    if time.time() - start > _AUTH_WINDOW_S:
+        _AUTH_FAILS.pop(ip, None)           # window elapsed — forgive
+        return False
+    return count >= _AUTH_MAX_FAILS
+
+
+def _auth_note_failure(ip: str) -> None:
+    now = time.time()
+    rec = _AUTH_FAILS.get(ip)
+    if not rec or now - rec[1] > _AUTH_WINDOW_S:
+        _AUTH_FAILS[ip] = [1, now]
+    else:
+        rec[0] += 1
+
+
+def _auth_note_success(ip: str) -> None:
+    _AUTH_FAILS.pop(ip, None)
+
+
 class _AdminHTTP(BaseHTTPRequestHandler):
-    def _authed(self) -> bool:
+    def _client_ip(self) -> str:
+        return self.client_address[0] if self.client_address else "?"
+
+    def _principal(self) -> "str | None":
+        """Who authenticated, decided by *which token* — not by any client-set header.
+        'human' = the admin token (the operator); 'bot' = the distinct PA_BOT_TOKEN. None = neither.
+        This is the F3 fix: the human/bot boundary is a credential, so dropping X-POKE-Bot can't
+        turn a bot into a human. Constant-time compares throughout."""
         tok = self.headers.get("X-POKE-Admin-Token", "")
-        return bool(tok) and secrets.compare_digest(tok, ADMIN_TOKEN)
+        if tok and secrets.compare_digest(tok, ADMIN_TOKEN):
+            return "human"
+        if tok and BOT_TOKEN and secrets.compare_digest(tok, BOT_TOKEN):
+            return "bot"
+        return None
+
+    def _authed(self) -> bool:
+        return self._principal() is not None
+
+    def _auth_or_reject(self) -> bool:
+        """Gate one request: rate-limit first (F1 — no unlimited online guessing), then auth.
+        Returns True if the caller may proceed; otherwise it has already sent 429/401."""
+        ip = self._client_ip()
+        if _auth_rate_limited(ip):
+            self._reply(429, {"error": "too many failed attempts — cool down and try again"})
+            return False
+        if not self._authed():
+            _auth_note_failure(ip)
+            self._reply(401, {"error": "unauthorized"})
+            return False
+        _auth_note_success(ip)
+        return True
 
     def _bot_blocked(self) -> bool:
         """Server-owner bots identify with X-POKE-Bot; refuse them while their extension is off."""
@@ -1459,8 +1523,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
                     "timeout_s": timeout_left(a["name"]),
                 },
             })
-        if not self._authed():
-            return self._reply(401, {"error": "unauthorized"})
+        if not self._auth_or_reject():
+            return
         if self._bot_blocked():
             return
         if path in ("/stats", "/health"):
@@ -1539,8 +1603,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if not self._authed():
-            return self._reply(401, {"error": "unauthorized"})
+        if not self._auth_or_reject():
+            return
         if self._bot_blocked():
             return
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -1671,12 +1735,17 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             except (KeyError, ValueError) as e:
                 self._reply(409, {"error": str(e)})
         elif path.startswith("/roster/") and path.endswith("/vouch"):
-            if self.headers.get("X-POKE-Bot", "").strip():   # bots earn, humans vouch (promotion stays human)
-                return self._reply(403, {"error": "bots can't vote on review boards — promotion stays human"})
+            # F3: humans vouch, bots earn — decided by the authenticated principal (the credential),
+            # not the X-POKE-Bot header a caller sets on itself. A bot on PA_BOT_TOKEN can't vote.
+            if self._principal() != "human":
+                return self._reply(403, {"error": "only a human operator can vote on review boards — promotion stays human"})
             voter = str(data.get("voter") or data.get("by") or "operator")
             try:
                 tid = int(path[len("/roster/"):-len("/vouch")])
-                res = STORE.vouch(tid, voter, str(data.get("note") or ""))
+                # F2: record where the vouch came from so same-source sockpuppets are auditable;
+                # the store also refuses vouches from names that haven't served.
+                res = STORE.vouch(tid, voter, str(data.get("note") or ""),
+                                  voter_ip=self._client_ip(), voter_principal="human")
                 promo = fleet_try_promote(res["candidate"])
                 if promo:
                     res["promoted"] = promo
@@ -1698,7 +1767,8 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"ok": True, "result": res})
         elif path == "/budget":
             self._reply(200, {"ok": True, "result": fleet_budget_set(
-                allocated=data.get("allocated_sats"), spent=data.get("spent_sats"), note=data.get("note"))})
+                allocated=data.get("allocated_sats"), spent=data.get("spent_sats"),
+                note=data.get("note"), target_pct=data.get("target_pct"))})
         elif path == "/engineer/audit":                 # run the Chief Engineer audit now (owner or poke-engineer)
             self._reply(200, {"ok": True, "result": chief_engineer_audit(
                 actor=self.headers.get("X-POKE-Bot", "") or "operator")})
@@ -1709,7 +1779,18 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         pass
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", ""}
+
+
 def _start_admin_http() -> "ThreadingHTTPServer | None":
+    # F1: never expose the admin rails to the network on an auto-minted token. A reachable
+    # :4001 guarding reboot/shutdown/kick must have an explicitly pinned PA_ADMIN_TOKEN — fail
+    # closed rather than serve powerful controls behind a token the operator never chose.
+    if ADMIN_HTTP_HOST not in _LOOPBACK_HOSTS and ADMIN_TOKEN_GENERATED:
+        print(f"! web-admin rails REFUSED on non-loopback {ADMIN_HTTP_HOST}:{ADMIN_HTTP_PORT} "
+              "— set PA_ADMIN_TOKEN to a strong value before exposing the admin port to the network "
+              "(auto-generated tokens are loopback-only).")
+        return None
     try:
         srv = ThreadingHTTPServer((ADMIN_HTTP_HOST, ADMIN_HTTP_PORT), _AdminHTTP)
     except OSError as e:
@@ -2355,6 +2436,16 @@ def system_history(window: int = 60) -> dict:
 _BLOCK_CACHE = {"t": 0.0, "height": None, "source": ""}
 
 
+def _bft_month_names():
+    """Blessed BFT month lore, per verse, when it exists — else None so bft.py renders M01..M13.
+    Naming is the owner's to set; a verse supplies it via `bft_months: [13 names]` in its config,
+    so month names can land later with zero code change (docs/BFT.md)."""
+    names = VERSE.get("bft_months") if isinstance(VERSE, dict) else None
+    if isinstance(names, list) and len(names) >= bft.MONTHS_PER_YEAR:
+        return [str(n) for n in names[:bft.MONTHS_PER_YEAR]]
+    return None
+
+
 def block_height() -> dict:
     """Best-effort current Bitcoin block height for the console — local-first.
     Point PA_BITCOIN_REST_URL at your node's REST (bitcoind -rest=1), or PA_BITCOIN_RPC_URL
@@ -2383,7 +2474,11 @@ def block_height() -> dict:
         pass
     if height is not None:
         _BLOCK_CACHE.update(t=now, height=height, source=source)
-    return {"height": height, "source": source}
+    # Bitcoin Federated Time rides along with the raw stardate — one place, every consumer
+    # (console, certs, briefings) gets the date for free. See services/common/bft.py.
+    return {"height": height, "source": source,
+            "bft": bft.bft_from_height(height),
+            "bft_label": bft.format_bft(height, month_names=_bft_month_names())}
 
 
 def _find_player(name: str):
@@ -2484,26 +2579,35 @@ def fleet_leaderboard_json() -> dict:
 
 
 def fleet_budget_json() -> dict:
-    """The Fun Budget gauge — the non-profit literally funds the fun. Regtest/dev only."""
+    """The Fun Budget gauge — the non-profit literally funds the fun. `target_pct` is the share of
+    the treasury earmarked for crew engagement — default 33%, set by the server owner
+    (PA_FUN_BUDGET_PCT). Network follows PA_NETWORK (regtest by default; testnet is the bots'
+    playground — bots test, humans succeed, bots succeed, we all in)."""
     default_alloc = int(os.environ.get("PA_FUN_BUDGET_SATS", "0") or 0)
+    default_pct = float(os.environ.get("PA_FUN_BUDGET_PCT", "33") or 33)
+    network = os.environ.get("PA_NETWORK", "regtest").strip().lower() or "regtest"
     b = STORE.get_feature("fleet-ops", "budget", None) or {}
     alloc = int(b.get("allocated_sats", default_alloc) or 0)
     spent = int(b.get("spent_sats", 0) or 0)
+    target_pct = float(b.get("target_pct", default_pct) or 0)
     return {
         "allocated_sats": alloc, "spent_sats": spent, "remaining_sats": max(0, alloc - spent),
         "pct_spent": round(100 * spent / alloc, 1) if alloc else 0.0,
-        "note": b.get("note", "Treasury-funded reward pool — the non-profit funds the fun (regtest/dev)"),
-        "network": "regtest",
+        "target_pct": round(target_pct, 1),   # engagement share of treasury — owner's call
+        "note": b.get("note", "Treasury-funded reward pool for crew engagement — the non-profit funds the fun"),
+        "network": network,
     }
 
 
-def fleet_budget_set(allocated=None, spent=None, note=None) -> dict:
+def fleet_budget_set(allocated=None, spent=None, note=None, target_pct=None) -> dict:
     cur = fleet_budget_json()
     alloc = cur["allocated_sats"] if allocated is None else max(0, int(allocated))
     spnt = cur["spent_sats"] if spent is None else max(0, int(spent))
     nt = cur["note"] if note is None else str(note)[:200]
-    STORE.set_feature("fleet-ops", "budget", {"allocated_sats": alloc, "spent_sats": spnt, "note": nt})
-    event("admin", f"fun budget → {alloc} sats allocated, {spnt} spent")
+    tpct = cur["target_pct"] if target_pct is None else max(0.0, min(100.0, float(target_pct)))
+    STORE.set_feature("fleet-ops", "budget",
+                      {"allocated_sats": alloc, "spent_sats": spnt, "note": nt, "target_pct": tpct})
+    event("admin", f"fun budget → {alloc} sats allocated, {spnt} spent, {tpct:.0f}% engagement target")
     return fleet_budget_json()
 
 
@@ -2526,6 +2630,7 @@ def fleet_snapshot() -> dict:
     bh = block_height()
     return {
         "stardate": bh.get("height"), "stardate_source": bh.get("source"),
+        "stardate_bft": bh.get("bft_label"),
         "verse": _verse_id(), "verse_name": WORLD,
         "tickets": tickets, "counts": _ticket_counts(tickets), "kinds": FLEET_TICKET_KINDS,
         "ladder": ladder, "officers": officers, "leaderboard": board,
@@ -2855,6 +2960,11 @@ async def dispatch(p: Player, line: str) -> bool:
             await trial_judge(p, line.strip())
         return True
 
+    # Extra-credit secret: naming "the Thirteenth" opens the hidden Observatory (frens-hub).
+    if _wants_observatory(line) and p.room != "observatory":
+        await observatory_enter(p)
+        return True
+
     if verb in ("quit", "exit", "q"):
         gained = p.xp - p.session_start_xp
         new_runes = len(p.certs) - p.session_start_runes
@@ -2992,6 +3102,8 @@ async def dispatch(p: Player, line: str) -> bool:
         await show_gallery(p)
     elif verb == "view":
         await view_piece(p, rest)
+    elif verb in ("birthday", "bday", "sign", "zodiac", "horoscope"):
+        await sign_reading(p, rest)
     elif p.boss_pending:
         await boss_judge(p, line.strip())
     elif p.trial_pending:
@@ -3036,6 +3148,43 @@ async def pull(p: Player, thing: str) -> None:
         focus_room(p)
     else:
         push(p, c(GREY, "there's nothing like that to pull here"))
+
+
+# --- the Observatory: extra-credit hidden room (calendars + zodiac) -----------
+_OBSERVATORY_TRIGGERS = {"thirteen", "13", "ophiuchus", "stargaze",
+                         "thirteenth", "the thirteenth", "13th sign", "thirteenth sign"}
+
+
+def _wants_observatory(line: str) -> bool:
+    """True when the player names 'the Thirteenth' — bare or spoken ('say thirteen')."""
+    s = line.strip().lower()
+    if s.startswith("say "):
+        s = s[4:].strip()
+    return s.strip("!.?") in _OBSERVATORY_TRIGGERS
+
+
+async def observatory_enter(p: "Player") -> None:
+    if "observatory" not in ROOMS:
+        push(p, c(GREY, "the stars are quiet in this verse, fren — no dome opens here"))
+        return
+    if p.room == "observatory":
+        focus_room(p)
+        return
+    push(p, c(GOLD, "You name the Thirteenth. A seam of light opens overhead and a hidden stair unfolds."))
+    p.room = "observatory"
+    await asyncio.to_thread(STORE.save_player, p.name, p.room, p.inventory)
+    focus_room(p)
+
+
+async def sign_reading(p: "Player", rest: str) -> None:
+    """Map a Gregorian birthday across the 12- and 13-month calendars and both zodiacs."""
+    pd = calendar_lore.parse_date(rest)
+    if not pd:
+        push(p, c(GREY, "tell me a birthday, fren:  birthday <date>   "
+                        "e.g.  birthday July 20  ·  sign 12/17  ·  bday dec 5"))
+        return
+    lines = calendar_lore.format_reading(*pd)
+    focus_text(p, "The Observatory · your place in the sky", lines, CYAN)
 
 
 # --- connection handling -----------------------------------------------------

@@ -347,13 +347,22 @@ class SqliteWorldStore:
                 ticket_id  INTEGER NOT NULL,               -- the resolved mission being endorsed
                 candidate  TEXT NOT NULL,                  -- the resolver vouched for
                 voter      TEXT NOT NULL,
+                voter_ip   TEXT,                           -- audit trail: where the vouch came from (F2)
+                voter_principal TEXT,                      -- 'human' — bots are refused server-side (F3)
                 note       TEXT DEFAULT '',
                 at         TEXT DEFAULT (datetime('now')),
                 UNIQUE(ticket_id, voter)                   -- one vouch per voter per mission
             );
             CREATE INDEX IF NOT EXISTS idx_board_candidate ON board_votes(candidate);
+            CREATE INDEX IF NOT EXISTS idx_board_voter_ip ON board_votes(voter_ip);
             """
         )
+        # Idempotent migration for DBs created before the audit-trail columns landed (F2).
+        for col, decl in (("voter_ip", "TEXT"), ("voter_principal", "TEXT")):
+            try:
+                self.db.execute(f"ALTER TABLE board_votes ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self.db.commit()
 
     _SEVERITY_POINTS = {"low": 1, "normal": 2, "high": 3, "critical": 5}
@@ -499,7 +508,16 @@ class SqliteWorldStore:
             "UNION SELECT claimed_by AS name FROM tickets WHERE claimed_by IS NOT NULL").fetchall()
         return sorted({r["name"] for r in rows if r["name"]})
 
-    def vouch(self, ticket_id: int, voter: str, note: str = "") -> dict[str, Any]:
+    def vouch(self, ticket_id: int, voter: str, note: str = "",
+              voter_ip: Optional[str] = None, voter_principal: str = "human") -> dict[str, Any]:
+        """Endorse a resolved mission for its resolver. Integrity guards (see the Fleet Ops audit):
+        - only a resolved mission with a resolver can be vouched;
+        - a voter can't vouch their own work, and can't vouch the same mission twice (UNIQUE);
+        - the voter must be a **known officer** who has themselves served — you can't conjure a
+          fresh sockpuppet name to manufacture a promotion quorum (F2 mitigation);
+        - `voter_ip` / `voter_principal` are recorded so same-source sockpuppets are auditable.
+        Full closure of F2 (one *human* = one vouch) needs per-operator identity — tracked as a
+        dependency. Until then, ranks are HONOR ONLY and must never authorize spend."""
         row = self.get_ticket(ticket_id)
         if not row:
             raise KeyError("no such ticket")
@@ -510,10 +528,13 @@ class SqliteWorldStore:
             raise ValueError("that mission has no resolver to vouch for")
         if voter == candidate:
             raise ValueError("you can't vouch for your own work — that's the whole point")
+        if voter not in set(self.known_officers()):
+            raise ValueError("only an officer who has served can vouch — do a mission first, then vote")
         try:
             self.db.execute(
-                "INSERT INTO board_votes(ticket_id, candidate, voter, note) VALUES (?, ?, ?, ?)",
-                (int(ticket_id), candidate, voter, note))
+                "INSERT INTO board_votes(ticket_id, candidate, voter, note, voter_ip, voter_principal) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (int(ticket_id), candidate, voter, note, voter_ip, voter_principal))
         except sqlite3.IntegrityError:
             raise ValueError("you've already vouched this mission")
         self.db.execute(
@@ -654,7 +675,8 @@ class PostgresWorldStore:
     def known_officers(self) -> list[str]:
         raise NotImplementedError
 
-    def vouch(self, ticket_id: int, voter: str, note: str = "") -> dict[str, Any]:
+    def vouch(self, ticket_id: int, voter: str, note: str = "",
+              voter_ip: Optional[str] = None, voter_principal: str = "human") -> dict[str, Any]:
         raise NotImplementedError("PostgresWorldStore.vouch — INSERT board_votes")
 
     def vouch_count(self, candidate: str) -> int:

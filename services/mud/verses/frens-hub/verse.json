@@ -30,7 +30,7 @@
     },
     "bridge": {
       "title": "The Bridge",
-      "desc": "Starfield on every screen. The QUARTERMASTER studies a chart of nodes — every dot a verse, every line a relay. 'Rank is earned in understanding, Ensign. Ask, and demonstrate.'",
+      "desc": "Starfield on every screen. The QUARTERMASTER studies a chart of nodes — every dot a verse, every line a relay. 'Rank is earned in understanding, Ensign. Ask, and demonstrate.' One star overhead sits unlabeled; the old crew only ever called it the THIRTEENTH — say its number aloud and the dome may open.",
       "exits": { "south": "shuttle-bay" },
       "npcs": ["quartermaster"],
       "art": [
@@ -48,6 +48,18 @@
         "     ( ( (  ◉  ) ) )",
         "      the drive core",
         "     one clock, one chain"
+      ]
+    },
+    "observatory": {
+      "title": "The Observatory (extra credit)",
+      "desc": "A hidden dome above the bridge, off every map. Two great calendar rings turn overhead, overlapping: the 12-month calendar you were handed, and the 13-month one the reformers drew (13 months of 28 days — Sol slipped between June and July). Etched on the brass: the days that authorities simply DELETED — 10 by a Pope in 1582, 11 by Britain in 1752 — and the note that Rome renamed the months after its emperors. Below the rings, a zodiac wheel shows not twelve houses but THIRTEEN: the sun truly crosses Ophiuchus, the Serpent Bearer (~Nov 29–Dec 17), between Scorpio and Sagittarius. A prompt glows: 'Find where your birthday lands — type  birthday <your date>  (e.g. birthday July 20).'  The stair back down to the bridge is south.",
+      "exits": { "south": "bridge", "down": "bridge" },
+      "npcs": [],
+      "art": [
+        "        . ✦ .   ___   . ✦ .",
+        "      (  12  )=(  ⛎  )=(  13  )",
+        "        '·.___.·'   '·.___.·'",
+        "     two calendars, one honest sky"
       ]
     }
   },

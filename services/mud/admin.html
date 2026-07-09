@@ -1517,6 +1517,9 @@ html[data-verse="frens-hub"]{ --pa-cyan:#5ad1ff; }
   // Officer identity for missions = the operator's ops tag.
   function fleetOfficer(){ return (typeof opTag === "string" && opTag) ? opTag : "operator"; }
   function flEsc(s){ return String(s==null?"":s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+  // Whitelist a level/verdict before it enters a class attribute — only letters/hyphen survive,
+  // case preserved so .av.RED and .fl.red both still match their CSS (F5).
+  function flCls(s){ return String(s==null?"":s).replace(/[^A-Za-z-]/g,""); }
   function flNum(n){ try{ return (n||0).toLocaleString(); }catch(e){ return String(n||0); } }
   function flSet(id,t){ const e=$(id); if(e) e.textContent=t; }
   const KIND_LABEL = { incident:"INC", problem:"PRB", change:"CHG", request:"REQ", anomaly:"ANM", tribunal:"TRB", "peer-review":"REV" };
@@ -1525,8 +1528,12 @@ html[data-verse="frens-hub"]{ --pa-cyan:#5ad1ff; }
   function renderFleet(f){
     if(!f) return;
     lastFleet = f;
-    flSet("tk-stardate", "STARDATE " + (f.stardate!=null ? f.stardate : "—"));
-    flSet("fleet-stardate", "STARDATE " + (f.stardate!=null ? f.stardate : "—"));
+    // Stardate = raw block height; the BFT label is the Bitcoin Federated Time date (docs/BFT.md).
+    // flSet uses textContent, so these server strings can't inject markup (keeps the F5 invariant).
+    const sd = (f.stardate!=null ? f.stardate.toLocaleString() : "—");
+    const bftLbl = f.stardate_bft ? ("  ·  " + f.stardate_bft) : "";
+    flSet("tk-stardate", "STARDATE " + sd + bftLbl);
+    flSet("fleet-stardate", "STARDATE " + sd + bftLbl);
     flSet("fleet-verse", f.verse_name || f.verse || "—");
     if(f.verse) document.documentElement.setAttribute("data-verse", f.verse);
     const c = f.counts || {};
@@ -1624,10 +1631,14 @@ html[data-verse="frens-hub"]{ --pa-cyan:#5ad1ff; }
       const r = await apiPost("/engineer/audit", {});
       const a = r.result || {};
       sfx.chirp();
-      const findings = (a.findings||[]).map(f => '<div class="finding"><span class="fl '+(f.level||'')+'">'+String(f.level||'').toUpperCase()+'</span><span>'+flEsc(f.msg)+'</span></div>').join("");
+      const findings = (a.findings||[]).map(f => '<div class="finding"><span class="fl '+flCls(f.level)+'">'+String(f.level||'').toUpperCase()+'</span><span>'+flEsc(f.msg)+'</span></div>').join("");
       const recs = (a.recommendations||[]).map(x => '<li>'+flEsc(x)+'</li>').join("");
-      out.innerHTML = '<div class="av '+a.verdict+'">CHIEF ENGINEER — '+a.verdict+'</div>'
-        + '<div class="dim" style="font-size:10px;margin:2px 0 8px">don\'t trust, verify · stardate '+(a.stardate!=null?a.stardate:'—')+' · '+((a.opened||[]).length)+' ticket(s) opened</div>'
+      // F5: escape/whitelist every server value before it enters innerHTML — keeps the invariant
+      // that no server string reaches the DOM as markup, even server-computed ones.
+      const verdict = flEsc(a.verdict);
+      const sd = (a.stardate!=null ? flEsc(a.stardate) : '—');
+      out.innerHTML = '<div class="av '+flCls(a.verdict)+'">CHIEF ENGINEER — '+verdict+'</div>'
+        + '<div class="dim" style="font-size:10px;margin:2px 0 8px">don\'t trust, verify · stardate '+sd+' · '+((a.opened||[]).length)+' ticket(s) opened</div>'
         + findings
         + (recs ? '<div class="fleet-h" style="margin-top:8px">RECOMMENDATIONS</div><ul style="margin:4px 0 0 16px;padding:0;font-size:11.5px">'+recs+'</ul>' : '');
       if(a.verdict==="RED") sfx.alert();

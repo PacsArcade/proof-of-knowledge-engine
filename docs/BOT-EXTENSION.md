@@ -26,14 +26,24 @@ and survives reboots. Toggling emits an `admin` event.
 Bots use the node's admin rails on the admin port (default `4001`) with **two headers**:
 
 ```
-X-POKE-Admin-Token: <the node's admin token>
+X-POKE-Admin-Token: <the node's BOT token — PA_BOT_TOKEN>
 X-POKE-Bot: pacbot
 ```
 
-The `X-POKE-Bot` header is the honesty contract: it names the extension the request runs
-under. While that extension is disabled the node answers **403** with a hint telling the
-owner how to enable it — even with a valid admin token. Requests without the header are
-treated as the owner themselves; a well-behaved bot ALWAYS sends it.
+**Use `PA_BOT_TOKEN`, never the owner's `PA_ADMIN_TOKEN`** (security fix, 2026-07-08). The
+server decides human-vs-bot from *which token authenticated*, not from the `X-POKE-Bot`
+header — so a bot cannot become "human" by dropping the header. Human-only actions (review-board
+vouches, `POST /roster/<id>/vouch`) are refused to the bot token. Set `PA_BOT_TOKEN` to a
+distinct strong value and hand it to your bots; the owner keeps `PA_ADMIN_TOKEN` private.
+
+The `X-POKE-Bot` header is still the honesty contract for *which extension* is acting: while
+that extension is disabled the node answers **403** with a hint telling the owner how to
+enable it. It is a feature label, no longer a security boundary.
+
+> Auth hardening (same fix): the auto-generated admin token is now 256-bit, failed auth is
+> rate-limited per IP, and the admin rails **refuse to start on a non-loopback host unless
+> `PA_ADMIN_TOKEN` is explicitly set** — so exposing `:4001` to the network requires a pinned
+> strong token by construction.
 
 ## What a bot may read
 
