@@ -1003,7 +1003,8 @@ _EVENTS: deque = deque(maxlen=500)
 _EVENT_ID = 0
 _STATUS_TXT = ""
 EVENT_COLORS = {"join": GREEN, "part": GREY, "etch": GOLD, "levelup": GOLD,
-                "admin": CYAN, "warn": RED, "info": GREY}
+                "admin": CYAN, "warn": RED, "error": RED, "info": GREY,
+                "rank": GOLD, "audit": CYAN, "qa": RED}
 
 
 def cprint(line: str = "") -> None:
@@ -1510,6 +1511,30 @@ class _AdminHTTP(BaseHTTPRequestHandler):
         elif path.startswith("/players/") and path.endswith("/history"):
             _, pl = _find_player(path[len("/players/"):-len("/history")])
             self._reply(200, {"history": [_ANSI.sub("", x) for x in (pl.log if pl else [])]})
+        # --- Fleet Ops (docs/FLEET-OPS.md) ---
+        elif path == "/fleet":                          # one combined snapshot for the console poll
+            self._reply(200, fleet_snapshot())
+        elif path == "/roster":                         # the Duty Roster (optional ?status=open|claimed|resolved)
+            status = None
+            if "?" in self.path:
+                for kv in self.path.split("?", 1)[1].split("&"):
+                    if kv.startswith("status="):
+                        status = kv.split("=", 1)[1] or None
+            self._reply(200, {"tickets": STORE.list_tickets(status=status, limit=100),
+                              "counts": _ticket_counts(STORE.list_tickets(limit=500)),
+                              "kinds": FLEET_TICKET_KINDS})
+        elif path.startswith("/roster/") and path.endswith("/timeline"):
+            try:
+                tid = int(path[len("/roster/"):-len("/timeline")])
+                self._reply(200, {"ticket": STORE.get_ticket(tid), "timeline": STORE.ticket_timeline(tid)})
+            except ValueError:
+                self._reply(400, {"error": "bad ticket id"})
+        elif path == "/ranks":
+            self._reply(200, fleet_ranks_json())
+        elif path == "/leaderboard":
+            self._reply(200, fleet_leaderboard_json())
+        elif path == "/budget":
+            self._reply(200, fleet_budget_json())
         else:
             self._reply(404, {"error": "not found"})
 
@@ -1587,8 +1612,17 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             self._reply(200, {"ok": True, "result": self._run(op_watch(
                 str(data.get("player", "")), bool(data.get("on", True))))})
         elif path == "/knowledge/flag":
-            _QA_FLAGS.append({"topic": data.get("topic", ""), "quote": data.get("quote", ""),
-                              "by": data.get("by", ""), "status": "FLAGGED"})
+            topic = data.get("topic", ""); quote = data.get("quote", ""); by = data.get("by", "")
+            _QA_FLAGS.append({"topic": topic, "quote": quote, "by": by, "status": "FLAGGED"})
+            # Ingest adapter → Duty Roster: a flagged claim becomes a Peer-Review mission so it
+            # gets verified, not just noted (safeguards against group knowledge). Idempotent per topic.
+            try:
+                tk = STORE.raise_ticket("peer-review", f"Verify canon: {topic or 'flagged claim'}",
+                                        detail=(quote or "")[:400], source="knowledge-flag", severity="high",
+                                        dedup_key=f"flag:{(topic or quote or '')[:80]}", verse=_verse_id())
+                event("qa", f"knowledge flag → Peer-Review {tk.get('code')}: {topic}")
+            except Exception:
+                pass
             self._reply(200, {"ok": True, "result": "flagged"})
         elif path == "/modules":
             self._reply(200, {"ok": True, "result": "module save is stubbed — the Architect wires this next"})
@@ -1608,6 +1642,66 @@ class _AdminHTTP(BaseHTTPRequestHandler):
             if data.get("site"):
                 _SITELINK["site"] = str(data.get("site"))
             self._reply(200, {"ok": True, "result": _SITELINK["mode"] + " — " + _SITELINK["url"]})
+        # --- Fleet Ops (docs/FLEET-OPS.md) ---
+        elif path == "/roster":                         # operator raises a mission by hand
+            tk = STORE.raise_ticket(
+                str(data.get("kind", "request")), str(data.get("title", "untitled mission")),
+                detail=str(data.get("detail", "")), source="manual",
+                severity=str(data.get("severity", "normal")),
+                dedup_key=(str(data.get("dedup_key")) if data.get("dedup_key") else None), verse=_verse_id())
+            event("admin", f"operator raised {tk.get('code')}: {tk.get('title')}")
+            self._reply(200, {"ok": True, "result": tk})
+        elif path.startswith("/roster/") and path.endswith("/claim"):
+            officer = str(data.get("officer") or data.get("by") or "operator")
+            try:
+                tid = int(path[len("/roster/"):-len("/claim")])
+                result = STORE.claim_ticket(tid, officer)
+                event("admin", f"{officer} claimed mission {result.get('code')}")
+                self._reply(200, {"ok": True, "result": result})
+            except (KeyError, ValueError) as e:
+                self._reply(409, {"error": str(e)})
+        elif path.startswith("/roster/") and path.endswith("/resolve"):
+            officer = str(data.get("officer") or data.get("by") or "operator")
+            disp = str(data.get("disposition") or data.get("note") or "")
+            try:
+                tid = int(path[len("/roster/"):-len("/resolve")])
+                t = STORE.resolve_ticket(tid, officer, disp)
+                event("admin", f"{officer} resolved {t.get('code')} — {disp}")
+                self._reply(200, {"ok": True, "result": t})
+            except (KeyError, ValueError) as e:
+                self._reply(409, {"error": str(e)})
+        elif path.startswith("/roster/") and path.endswith("/vouch"):
+            if self.headers.get("X-POKE-Bot", "").strip():   # bots earn, humans vouch (promotion stays human)
+                return self._reply(403, {"error": "bots can't vote on review boards — promotion stays human"})
+            voter = str(data.get("voter") or data.get("by") or "operator")
+            try:
+                tid = int(path[len("/roster/"):-len("/vouch")])
+                res = STORE.vouch(tid, voter, str(data.get("note") or ""))
+                promo = fleet_try_promote(res["candidate"])
+                if promo:
+                    res["promoted"] = promo
+                event("admin", f"{voter} vouched mission #{tid} for {res['candidate']}"
+                               + (f" → PROMOTED to {promo['rank']}" if promo else ""))
+                self._reply(200, {"ok": True, "result": res})
+            except (KeyError, ValueError) as e:
+                self._reply(409, {"error": str(e)})
+        elif path == "/commend":                        # owner grants a commendation directly
+            rec = str(data.get("recipient") or data.get("player") or "").strip()
+            if not rec:
+                return self._reply(400, {"error": "need a recipient"})
+            res = STORE.award_commendation(rec, int(data.get("points", 1) or 1),
+                                           str(data.get("reason", "")), awarded_by="owner", verse=_verse_id())
+            promo = fleet_try_promote(rec)
+            if promo:
+                res["promoted"] = promo
+            event("admin", f"commendation → {rec} (+{int(data.get('points', 1) or 1)})")
+            self._reply(200, {"ok": True, "result": res})
+        elif path == "/budget":
+            self._reply(200, {"ok": True, "result": fleet_budget_set(
+                allocated=data.get("allocated_sats"), spent=data.get("spent_sats"), note=data.get("note"))})
+        elif path == "/engineer/audit":                 # run the Chief Engineer audit now (owner or poke-engineer)
+            self._reply(200, {"ok": True, "result": chief_engineer_audit(
+                actor=self.headers.get("X-POKE-Bot", "") or "operator")})
         else:
             self._reply(404, {"error": "not found"})
 
@@ -2125,6 +2219,12 @@ EXT_FILE = os.environ.get("PA_EXTENSIONS_FILE", os.path.join(DATA_DIR, "extensio
 _EXT_DEFAULTS = {
     "pacbot": {"enabled": False,
                "desc": "pacBOT ops bot — may read stats/events and act for the owner (see docs/BOT-EXTENSION.md)"},
+    "poke-engineer": {"enabled": False,
+                      "desc": "Chief Engineer — audits node health (don't trust, verify), flags trends, "
+                              "and opens Fleet Ops tickets. Read-only; recommends, never mutates (docs/FLEET-OPS.md)"},
+    "poke-counsel": {"enabled": False,
+                     "desc": "Ship's Counsel — compliance & rights advisor (advisory only, not legal advice); "
+                             "drafts memos to the Tribunal board. Seam only in v1 (docs/FLEET-OPS.md)"},
 }
 
 
@@ -2292,6 +2392,256 @@ def _find_player(name: str):
         if pl.name.lower() == key or (pl.fren_tag or "").lower() == key:
             return w, pl
     return None, None
+
+
+# =============================================================================
+# Fleet Ops — the collective-admin game loop (docs/FLEET-OPS.md) 🖖⛓️
+# Real admin work as a Starfleet rank climb: Duty Roster, commendations, review
+# boards, Fun Budget, stardate = block height, and a crew of officer bots.
+# Regtest/dev by default — nothing here etches or spends real value.
+# =============================================================================
+
+# Officer bots identify via X-POKE-Bot; they can EARN commendations but never vote
+# on review boards — promotion stays human (docs/FLEET-OPS.md §7).
+FLEET_BOT_OFFICERS = {"poke-engineer", "pacbot", "poke-counsel"}
+FLEET_PROMOTION_VOUCHES = int(os.environ.get("PA_FLEET_VOUCHES", "2") or 2)
+FLEET_TICKET_KINDS = list(world_store._TICKET_PREFIX.keys())
+
+
+def _verse_id():
+    return VERSE.get("id") if isinstance(VERSE, dict) else None
+
+
+def _fleet_ladder() -> list:
+    """Rank ladder for this verse: [{index, title, threshold}]. Titles come from the verse's
+    `ranks` when present (frens-hub is the Starfleet ladder); thresholds are a legible curve."""
+    titles = []
+    ranks = VERSE.get("ranks") if isinstance(VERSE, dict) else None
+    if isinstance(ranks, dict):
+        for lvl in sorted(ranks, key=lambda k: int(k)):
+            titles.append(str(ranks[lvl]))
+    elif isinstance(ranks, list):
+        for r in ranks:
+            titles.append(str(r.get("title")) if isinstance(r, dict) else str(r))
+    if not titles:
+        titles = ["Ensign", "Lieutenant", "Lt. Commander", "Commander",
+                  "Captain", "Commodore", "Server Admiral"]
+    base = [0, 10, 25, 50, 90, 150, 250, 400, 600, 900]
+    out = []
+    for i, t in enumerate(titles):
+        thr = base[i] if i < len(base) else base[-1] + (i - len(base) + 1) * 400
+        out.append({"index": i, "title": t, "threshold": thr})
+    return out
+
+
+def _officer_standing(name: str, ladder: list) -> dict:
+    """Where an officer stands: points earned, confirmed rank, and whether a review board can
+    convene — points past the next bar AND witnessed by enough peers. Bots never promote."""
+    pts = STORE.commendation_total(name)
+    confirmed = max(0, min(STORE.get_rank_index(name), len(ladder) - 1))
+    vouches = STORE.vouch_count(name)
+    is_bot = name in FLEET_BOT_OFFICERS
+    nxt = ladder[confirmed + 1] if confirmed + 1 < len(ladder) else None
+    ready = bool(nxt) and pts >= nxt["threshold"] and vouches >= FLEET_PROMOTION_VOUCHES and not is_bot
+    return {
+        "name": name, "points": pts, "vouches": vouches, "is_bot": is_bot,
+        "rank_index": confirmed, "rank": ladder[confirmed]["title"],
+        "next_rank": nxt["title"] if nxt else None,
+        "next_threshold": nxt["threshold"] if nxt else None,
+        "to_next": max(0, nxt["threshold"] - pts) if nxt else 0,
+        "board_ready": ready,
+    }
+
+
+def fleet_try_promote(name: str):
+    """Convene the review board: if `name` is past the point bar AND has enough peer vouches,
+    promote one rank and event it. Returns the promotion dict, or None. Bots never promote."""
+    ladder = _fleet_ladder()
+    st = _officer_standing(name, ladder)
+    if not st["board_ready"]:
+        return None
+    new_index = st["rank_index"] + 1
+    STORE.set_rank_index(name, new_index, verse=_verse_id())
+    new_title = ladder[min(new_index, len(ladder) - 1)]["title"]
+    event("rank", f"REVIEW BOARD → {name} promoted to {new_title} (earned + witnessed)")
+    return {"name": name, "rank": new_title, "rank_index": new_index}
+
+
+def fleet_ranks_json() -> dict:
+    ladder = _fleet_ladder()
+    officers = [_officer_standing(n, ladder) for n in STORE.known_officers()]
+    officers.sort(key=lambda s: (-s["points"], s["name"]))
+    return {"ladder": ladder, "officers": officers, "promotion_vouches": FLEET_PROMOTION_VOUCHES}
+
+
+def fleet_leaderboard_json() -> dict:
+    ladder = _fleet_ladder()
+    board = STORE.leaderboard(limit=25)
+    for row in board:
+        row["rank"] = _officer_standing(row["name"], ladder)["rank"]
+        row["is_bot"] = row["name"] in FLEET_BOT_OFFICERS
+    return {"leaderboard": board, "stardate": block_height().get("height")}
+
+
+def fleet_budget_json() -> dict:
+    """The Fun Budget gauge — the non-profit literally funds the fun. Regtest/dev only."""
+    default_alloc = int(os.environ.get("PA_FUN_BUDGET_SATS", "0") or 0)
+    b = STORE.get_feature("fleet-ops", "budget", None) or {}
+    alloc = int(b.get("allocated_sats", default_alloc) or 0)
+    spent = int(b.get("spent_sats", 0) or 0)
+    return {
+        "allocated_sats": alloc, "spent_sats": spent, "remaining_sats": max(0, alloc - spent),
+        "pct_spent": round(100 * spent / alloc, 1) if alloc else 0.0,
+        "note": b.get("note", "Treasury-funded reward pool — the non-profit funds the fun (regtest/dev)"),
+        "network": "regtest",
+    }
+
+
+def fleet_budget_set(allocated=None, spent=None, note=None) -> dict:
+    cur = fleet_budget_json()
+    alloc = cur["allocated_sats"] if allocated is None else max(0, int(allocated))
+    spnt = cur["spent_sats"] if spent is None else max(0, int(spent))
+    nt = cur["note"] if note is None else str(note)[:200]
+    STORE.set_feature("fleet-ops", "budget", {"allocated_sats": alloc, "spent_sats": spnt, "note": nt})
+    event("admin", f"fun budget → {alloc} sats allocated, {spnt} spent")
+    return fleet_budget_json()
+
+
+def _ticket_counts(tickets: list) -> dict:
+    counts = {"open": 0, "claimed": 0, "resolved": 0}
+    for t in tickets:
+        counts[t["status"]] = counts.get(t["status"], 0) + 1
+    return counts
+
+
+def fleet_snapshot() -> dict:
+    """One cheap payload for the console poll: roster + ranks + leaderboard + budget + stardate."""
+    ladder = _fleet_ladder()
+    tickets = STORE.list_tickets(limit=60)
+    officers = [_officer_standing(n, ladder) for n in STORE.known_officers()]
+    officers.sort(key=lambda s: (-s["points"], s["name"]))
+    board = STORE.leaderboard(limit=12)
+    for row in board:
+        row["is_bot"] = row["name"] in FLEET_BOT_OFFICERS
+    bh = block_height()
+    return {
+        "stardate": bh.get("height"), "stardate_source": bh.get("source"),
+        "verse": _verse_id(), "verse_name": WORLD,
+        "tickets": tickets, "counts": _ticket_counts(tickets), "kinds": FLEET_TICKET_KINDS,
+        "ladder": ladder, "officers": officers, "leaderboard": board,
+        "budget": fleet_budget_json(),
+        "engineer_enabled": extension_enabled("poke-engineer"),
+        "promotion_vouches": FLEET_PROMOTION_VOUCHES,
+    }
+
+
+# --- Chief Engineer (poke-engineer): "don't trust, verify" ---------------------
+def _fleet_avg(xs):
+    return round(sum(xs) / len(xs), 1) if xs else 0.0
+
+
+def _fleet_trend(xs):
+    if len(xs) < 6:
+        return 0.0
+    h = len(xs) // 2
+    return round(_fleet_avg(xs[h:]) - _fleet_avg(xs[:h]), 1)
+
+
+def chief_engineer_audit(actor: str = "poke-engineer") -> dict:
+    """Recompute node health from raw signal (rolling history + event feed + swarm + block tip)
+    instead of trusting the instantaneous 'looks fine' number, and open Duty Roster tickets for
+    anything red. Read-only — it recommends, it never mutates the box. Reports trends, not snapshots."""
+    findings, opened, vid = [], [], _verse_id()
+    # only NEW conditions count as "opened" — a still-open ticket re-surfaced by dedup doesn't re-farm
+    pre_open = {t.get("dedup_key") for t in STORE.list_tickets(limit=500) if t["status"] != "resolved"}
+
+    def _raise(kind, title, detail, severity, dedup_key):
+        tk = STORE.raise_ticket(kind, title, detail=detail, source="engineer",
+                                severity=severity, dedup_key=dedup_key, verse=vid)
+        if dedup_key not in pre_open:
+            opened.append(tk.get("code"))
+        return tk
+
+    hist = system_history(90)
+    cpu = list(hist.get("cpu", []) or [])
+    mem = list(hist.get("mem", []) or [])
+    cpu_avg, cpu_tr = _fleet_avg(cpu[-30:]), _fleet_trend(cpu)
+    mem_avg, mem_tr = _fleet_avg(mem[-30:]), _fleet_trend(mem)
+    CPU_WARN = float(os.environ.get("PA_FLEET_CPU_WARN", "85") or 85)
+    MEM_WARN = float(os.environ.get("PA_FLEET_MEM_WARN", "90") or 90)
+
+    if cpu and cpu_avg >= CPU_WARN:
+        rec = "Cap the AMP game servers or shift LLM inference off-peak — the ZAP box locks 1h on sustained overload."
+        findings.append({"area": "cpu", "level": "red", "trend": cpu_tr,
+                         "msg": f"CPU sustained at {cpu_avg}% (trend {cpu_tr:+}); warn at {CPU_WARN:.0f}%", "rec": rec})
+        _raise("incident", f"CPU sustained at {cpu_avg}%",
+               f"Rolling avg {cpu_avg}% over the window (trend {cpu_tr:+}). {rec}",
+               "critical" if cpu_avg >= 95 else "high", "engineer:cpu-hot")
+    elif cpu:
+        findings.append({"area": "cpu", "level": "green", "trend": cpu_tr,
+                         "msg": f"CPU avg {cpu_avg}% (trend {cpu_tr:+})"})
+
+    if mem and mem_avg >= MEM_WARN:
+        rec = "Memory trending toward the ceiling — add swap or cap concurrent inference before an OOM."
+        findings.append({"area": "mem", "level": "red", "trend": mem_tr,
+                         "msg": f"Memory sustained at {mem_avg}% (trend {mem_tr:+}); warn at {MEM_WARN:.0f}%", "rec": rec})
+        _raise("incident", f"Memory sustained at {mem_avg}%",
+               f"Rolling avg {mem_avg}% (trend {mem_tr:+}). {rec}", "high", "engineer:mem-hot")
+    elif mem:
+        findings.append({"area": "mem", "level": "green", "trend": mem_tr,
+                         "msg": f"Memory avg {mem_avg}% (trend {mem_tr:+})"})
+
+    warns = [e for e in list(_EVENTS)[-200:] if e.get("kind") in ("warn", "error")]
+    if len(warns) >= 5:
+        rec = "Repeated warnings — read the event feed and fix the root cause before it escalates."
+        findings.append({"area": "events", "level": "red",
+                         "msg": f"{len(warns)} warn/error events in recent history", "rec": rec})
+        _raise("problem", f"{len(warns)} warn/error events piling up",
+               "; ".join(w.get("msg", "") for w in warns[-8:]), "high", "engineer:event-storm")
+    else:
+        findings.append({"area": "events", "level": "green", "msg": f"{len(warns)} warn/error events (quiet)"})
+
+    swarm = _probe_swarm()
+    if swarm.get("online") and swarm.get("manifest_verified") is False:
+        rec = "Manifest failed verification — re-fetch the corpus manifest and check the signing key."
+        findings.append({"area": "swarm", "level": "red", "msg": "knowledge-swarm manifest UNVERIFIED", "rec": rec})
+        _raise("anomaly", "Knowledge swarm manifest unverified",
+               "Verify, don't trust: the corpus manifest did not verify. " + rec, "high", "engineer:manifest")
+    elif swarm.get("online"):
+        findings.append({"area": "swarm", "level": "green", "msg": "knowledge swarm online, manifest verified"})
+    else:
+        findings.append({"area": "swarm", "level": "amber",
+                         "msg": "knowledge swarm offline/unconfigured — " + str(swarm.get("reason", ""))})
+
+    bh = block_height()
+    if bh.get("height") is None:
+        findings.append({"area": "chain", "level": "amber", "msg": "block height unavailable — stardate source down",
+                         "rec": "Point PA_BITCOIN_REST_URL / RPC at the node so the stardate tracks the tip."})
+    else:
+        findings.append({"area": "chain", "level": "green", "msg": f"stardate {bh['height']} via {bh.get('source')}"})
+
+    flagged = sum(1 for f in _QA_FLAGS if f.get("status") == "FLAGGED")
+    if flagged >= 3:
+        findings.append({"area": "canon", "level": "amber", "msg": f"{flagged} knowledge flags awaiting peer review",
+                         "rec": "Assign Peer-Review missions from the Duty Roster to clear the canon backlog."})
+
+    real = [c for c in opened if c]
+    if real:  # a working officer that catches a real incident earns a small commendation
+        try:
+            STORE.award_commendation("poke-engineer", len(real),
+                                     "audit caught " + ", ".join(real), awarded_by="system", verse=vid)
+        except Exception:
+            pass
+
+    reds = [f for f in findings if f["level"] == "red"]
+    ambers = [f for f in findings if f["level"] == "amber"]
+    verdict = "RED" if reds else ("AMBER" if ambers else "GREEN")
+    event("audit", f"Chief Engineer audit {verdict} — {len(real)} ticket(s) opened")
+    return {"verdict": verdict, "findings": findings,
+            "recommendations": [f["rec"] for f in findings if f.get("rec")],
+            "opened": real, "stardate": bh.get("height"),
+            "report": f"Chief Engineer audit — {verdict}. " +
+                      ("; ".join(f["msg"] for f in findings) if findings else "all systems nominal.")}
 
 
 async def op_mute(name: str, on: bool, reason: str = "") -> str:
