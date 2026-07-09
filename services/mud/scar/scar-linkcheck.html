@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="scar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCAR ⇄ POKEMUD LINK CHECK</title>
+<style>
+  /* Pac's Arcade token seam (§6) — override under html[data-theme="…"], never fork markup. */
+  :root{
+    --pa-bg:#07070f; --pa-panel:#0d0d1a; --pa-fg:#d8d8e8; --pa-edge:#2a2a44;
+    --pa-cyan:#00f5d4; --pa-neon:#39ff14; --pa-ghost:#ff3860; --pa-coin:#ffd166;
+    --pa-pink:#ff007f; --pa-dim:#8a8aa0;
+    --pa-font-pixel:'Courier New',monospace; --pa-font-body:Roboto,system-ui,sans-serif;
+  }
+  html[data-theme="lcars"]{ --pa-bg:#000; --pa-panel:#111; --pa-edge:#664466;
+    --pa-cyan:#99ccff; --pa-neon:#ffcc66; --pa-ghost:#cc6666; --pa-coin:#ffaa44; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--pa-bg);color:var(--pa-fg);font-family:var(--pa-font-body);padding:20px;max-width:980px;margin-inline:auto}
+  h1,h2,.px{font-family:var(--pa-font-pixel);text-transform:uppercase;letter-spacing:.08em}
+  h1{font-size:18px;color:var(--pa-cyan);margin:0}
+  h2{font-size:13px;color:var(--pa-dim);margin:26px 0 8px}
+  header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
+         border:1px solid var(--pa-edge);background:var(--pa-panel);padding:14px 16px;border-radius:6px}
+  #badge{font-family:var(--pa-font-pixel);font-size:11px;padding:5px 10px;border-radius:4px;border:1px solid}
+  .safe{color:var(--pa-neon);border-color:var(--pa-neon)}
+  .caution{color:var(--pa-coin);border-color:var(--pa-coin)}
+  .danger{color:var(--pa-ghost);border-color:var(--pa-ghost);animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:.25}}
+  @media (prefers-reduced-motion: reduce){.danger{animation:none}}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  input{background:#000;border:1px solid var(--pa-edge);color:var(--pa-fg);padding:9px 12px;border-radius:4px;
+        font-family:var(--pa-font-pixel);font-size:12px;flex:1;min-width:220px}
+  button{background:transparent;border:1px solid var(--pa-cyan);color:var(--pa-cyan);padding:9px 18px;border-radius:4px;
+         font-family:var(--pa-font-pixel);font-size:12px;text-transform:uppercase;cursor:pointer}
+  button:hover{background:var(--pa-cyan);color:#000}
+  button:disabled{opacity:.35;cursor:not-allowed}
+  table{width:100%;border-collapse:collapse;background:var(--pa-panel);border:1px solid var(--pa-edge);border-radius:6px;overflow:hidden}
+  th,td{padding:8px 12px;font-size:12.5px;text-align:left;border-bottom:1px solid var(--pa-edge)}
+  th{font-family:var(--pa-font-pixel);font-size:10.5px;color:var(--pa-dim);text-transform:uppercase}
+  td.ep{font-family:var(--pa-font-pixel);font-size:11.5px;color:var(--pa-cyan)}
+  .ok{color:var(--pa-neon)} .fail{color:var(--pa-ghost)} .pend{color:var(--pa-dim)}
+  .lat{color:var(--pa-coin);font-family:var(--pa-font-pixel);font-size:11px}
+  #tail{background:#000;border:1px solid var(--pa-edge);border-radius:6px;height:180px;overflow-y:auto;
+        padding:10px 12px;font-family:var(--pa-font-pixel);font-size:11.5px;line-height:1.7}
+  .k-admin{color:var(--pa-coin)} .k-qa{color:var(--pa-cyan)} .k-audit{color:var(--pa-neon)}
+  .k-etch{color:var(--pa-pink)} .k-sys{color:var(--pa-dim)}
+  #summary{margin-top:10px;font-family:var(--pa-font-pixel);font-size:12px}
+  footer{color:var(--pa-dim);font-size:11.5px;margin-top:26px}
+  a{color:var(--pa-cyan)}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>SCAR ⇄ POKEMUD Link Check</h1>
+    <div style="font-size:11.5px;color:var(--pa-dim)">NODE: FRENS-HUB · admin HTTP contract per ADMIN-PORTAL-INTEGRATION.md §3</div>
+  </div>
+  <span id="badge" class="safe">REGTEST · SIMULATION / PLAY MONEY</span>
+</header>
+
+<div class="row">
+  <input id="host" value="http://127.0.0.1:4001" spellcheck="false" aria-label="node admin base URL">
+  <input id="token" type="password" placeholder="X-POKE-Admin-Token (paste — never a bot token)" aria-label="admin token">
+  <button id="run">Run Check</button>
+  <button id="tailBtn" disabled>Start Live Tail</button>
+</div>
+<div id="summary" class="pend">INSERT TOKEN · RUN CHECK</div>
+
+<h2>Read snapshots (§3a) → SCAR panels</h2>
+<table>
+  <thead><tr><th>Endpoint</th><th>Feeds panel</th><th>Status</th><th>Latency</th><th>Sniff</th></tr></thead>
+  <tbody id="checks"></tbody>
+</table>
+
+<h2>Server console — live tail (/events, 2s cadence)</h2>
+<div id="tail"><span class="k-sys">— tail idle — run the check, then start the tail —</span></div>
+
+<footer>
+  Companion files: <code>scar-adapter.js</code> (the client this page uses) ·
+  <code>mock/mock_admin.py</code> (contract mock, token <code>frens</code>).
+  Read-only by design: this page only issues §3a GETs. Wire §3b actions through
+  <code>scar.actions.*</code> in the portal, with optimistic UI + refetch (§10.4).
+</footer>
+
+<script src="scar-adapter.js"></script>
+<script>
+(function(){
+  'use strict';
+  var CHECKS = [
+    ['/stats',                     'BRIDGE · header / players / QA',  function(j){return 'players:'+(j.player_count!==undefined?j.player_count:'?')+' qa.flagged:'+(j.qa?j.qa.flagged:'?');}],
+    ['/system/history?window=60',  'BRIDGE · health telemetry',       function(j){return 'cpu['+((j.cpu||[]).length)+'] mem['+((j.mem||[]).length)+']';}],
+    ['/events?since=0',            'BRIDGE · server console tail',    function(j){return 'events:'+((j.events||[]).length)+' next:'+j.next;}],
+    ['/fleet',                     'DUTY ROSTER · combined snapshot', function(j){return 'stardate:'+j.stardate+' open:'+(j.counts?j.counts.open:'?')+' net:'+(j.budget?j.budget.network:'?');}],
+    ['/roster',                    'DUTY ROSTER · mission list',      function(j){return 'missions:'+((j.tickets||[]).length);}],
+    ['/ranks',                     'DUTY ROSTER · rank track',        function(j){return (j.ladder||[]).join('→')||'ok';}],
+    ['/leaderboard',               'DUTY ROSTER · commendations',     function(j){return 'entries:'+((j.leaderboard||j||[]).length||'ok');}],
+    ['/budget',                    'DUTY ROSTER · fun budget',        function(j){return (j.remaining_sats!==undefined?j.remaining_sats+' sats left · ':'')+(j.network||'');}],
+    ['/extensions',                'BOT DECK · swarm toggles',        function(j){return 'bots:'+Object.keys(j.extensions||{}).join(', ');}],
+    ['/modules',                   'SIMULATOR · course catalog',      function(j){return 'modules:'+((j.modules||[]).length);}],
+    ['/nodes',                     'FLEET MAP · mesh',                function(j){return 'online:'+j.online+(j.reason?' ('+j.reason+')':'');}],
+    ['/health',                    'health rollup',                   function(j){return JSON.stringify(j).slice(0,46);}]
+  ];
+
+  var tbody = document.getElementById('checks');
+  CHECKS.forEach(function(c,i){
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td class="ep">'+c[0]+'</td><td>'+c[1]+'</td>'+
+      '<td class="pend" id="st'+i+'">·</td><td class="lat" id="lat'+i+'"></td><td id="sn'+i+'" style="color:var(--pa-dim)"></td>';
+    tbody.appendChild(tr);
+  });
+
+  var scar = null, tailing = false;
+  var summary = document.getElementById('summary');
+  var badge = document.getElementById('badge');
+
+  function makeClient(){
+    return new PokeAdminClient({
+      baseUrl: document.getElementById('host').value.trim(),
+      onAuthFail: function(){
+        summary.className='fail';
+        summary.textContent='401 — TOKEN REJECTED · RE-ENTER ADMIN TOKEN (gate cleared, same as admin.html)';
+        document.getElementById('token').value='';
+        document.getElementById('token').focus();
+      }
+    });
+  }
+
+  function paintBadge(){
+    var b = scar.networkBadge();
+    badge.className = b.tone;
+    badge.textContent = b.network.toUpperCase() + ' · ' + b.label;
+  }
+
+  document.getElementById('run').onclick = function(){
+    scar = makeClient();
+    var tok = document.getElementById('token').value.trim();
+    if (tok) scar.setToken(tok);
+    var pass = 0, done = 0;
+    summary.className='pend'; summary.textContent='RUNNING…';
+    CHECKS.forEach(function(c,i){
+      var st=document.getElementById('st'+i), lat=document.getElementById('lat'+i), sn=document.getElementById('sn'+i);
+      st.className='pend'; st.textContent='…'; lat.textContent=''; sn.textContent='';
+      var t0 = performance.now();
+      scar.get(c[0]).then(function(j){
+        st.className='ok'; st.textContent='✓ LINKED';
+        lat.textContent = Math.round(performance.now()-t0)+'ms';
+        try { sn.textContent = c[2](j); } catch(e) { sn.textContent = 'ok'; }
+        if (c[0]==='/fleet' || c[0]==='/budget') { if (j && (j.network || (j.budget&&j.budget.network))) { scar._network=(j.network||j.budget.network); paintBadge(); } }
+        pass++;
+      }).catch(function(err){
+        st.className='fail'; st.textContent='✗ '+(err.status||'ERR');
+        sn.textContent = String(err.message||err).slice(0,70);
+      }).finally(function(){
+        done++;
+        if (done===CHECKS.length){
+          summary.className = pass===CHECKS.length?'ok':(pass?'pend':'fail');
+          summary.textContent = pass+'/'+CHECKS.length+' ENDPOINTS LINKED'+(pass===CHECKS.length?' · SCAR IS GO — GG FREN':' · SEE FAILURES ABOVE');
+          document.getElementById('tailBtn').disabled = pass===0;
+        }
+      });
+    });
+  };
+
+  var tailEl = document.getElementById('tail');
+  document.getElementById('tailBtn').onclick = function(){
+    if (!scar) return;
+    if (tailing){ scar.stopPolling(); tailing=false; this.textContent='Start Live Tail'; return; }
+    tailing = true; this.textContent='Stop Live Tail';
+    tailEl.innerHTML='';
+    scar.startPolling({
+      onEvents: function(p){
+        (p.events||[]).forEach(function(e){
+          var d = document.createElement('div');
+          var ts = new Date((e.at>1e12?e.at:e.at*1000)).toLocaleTimeString();
+          d.innerHTML = '<span class="k-sys">'+ts+'</span> <span class="k-'+(e.kind||'sys')+'">['+(e.kind||'sys').toUpperCase()+']</span> '+
+                        String(e.msg||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+          tailEl.appendChild(d);
+        });
+        tailEl.scrollTop = tailEl.scrollHeight;
+      },
+      onError: function(){ /* surfaced by summary on next run */ }
+    });
+  };
+})();
+</script>
+</body>
+</html>
