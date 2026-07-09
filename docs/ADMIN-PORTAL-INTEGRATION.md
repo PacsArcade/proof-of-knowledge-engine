@@ -191,11 +191,14 @@ way rather than scraping `admin.html`.
   frens.earth SSO yet.** `PA_FRENS_URL` is only a **UX flag** — nothing connects to frens.earth, and
   `verify_code()` is a **mock** (`server.py:944-950`). So a "frens.earth login" does not yet admit a
   *specific verified* account; anyone can type any handle.
-- **Real, verified frens.earth login is a build** (roadmap Epic 1): nostr **NIP-07** signed-challenge
-  sign-in (reuse pacsarcade-org), display handle `user@space`. It needs a frens.earth-side endpoint +
-  a **shared secret** not yet in `.env`. The web client header calls itself *"the seam for the
-  login/experience overhaul"* — **this is exactly the design team's surface**, so let's make the
-  portal login and the game login one and the same thing. Coordinate before either side builds auth.
+- **The login/profile system already exists in the `pacsarcade-org` repo** (nostr **NIP-07**
+  signed-challenge sign-in, display handle `user@space`) — **the design team is porting it to
+  frens.earth and owns this surface** (plus external exposure of `/play`). In *this* engine, entry is
+  still open-by-name and `verify_code()` is a mock; the real identity binding lands when the
+  frens.earth login integrates against the game (a frens.earth endpoint + a shared secret to be wired
+  into `.env`). The web client header marks itself *"the seam for the login/experience overhaul"* —
+  that's the hook the ported login plugs into. **Net for the backend: no game-side auth work needed
+  from me; the portal/login team drives it, and I expose whatever binding hook they need.**
 - **Exposure:** the prod container publishes only telnet `4000` today. To reach the browser game,
   publish the WS bridge `4002` and reverse-proxy `/play`; keep admin `4001` on loopback behind an
   authenticated proxy (the node also **fails closed off-loopback unless `PA_ADMIN_TOKEN` is pinned**).
