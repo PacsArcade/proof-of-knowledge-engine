@@ -19,7 +19,7 @@
     "shuttle-bay": {
       "title": "The Shuttle Bay",
       "desc": "Fresh off the shuttle, Ensign. The FRENS starship hums around you — a federation of education nodes flying in formation. The bridge is north; engineering is down. Your first duty: learn how the ship keeps ONE honest ledger across the whole fleet.",
-      "exits": { "north": "bridge", "down": "engineering" },
+      "exits": { "north": "bridge", "east": "academy", "west": "repair-bay", "down": "engineering" },
       "npcs": [],
       "art": [
         "      ______",
@@ -60,6 +60,125 @@
         "      (  12  )=(  ⛎  )=(  13  )",
         "        '·.___.·'   '·.___.·'",
         "     two calendars, one honest sky"
+      ]
+    },
+    "academy": {
+      "title": "The Training Deck",
+      "desc": "A quiet deck off the shuttle bay: drill consoles, a wall of service checklists, a board still lit from the last watch. This is where crew learn to RUN the ship's services — to read a duty ticket and know which job it really is. The Instructor waits by the board; say  talk instructor  to begin the drill. The Certification Bay is forward (north); the shuttle bay is back west.",
+      "exits": { "west": "shuttle-bay", "north": "exam_hall" },
+      "npcs": ["itil_instructor"],
+      "art": [
+        "     ┌───────────────┐",
+        "     │ INC PRB CHG   │   the duty board asks:",
+        "     │ REQ ANM  ?    │   which ticket is which?",
+        "     └───────────────┘"
+      ]
+    },
+    "exam_hall": {
+      "title": "The Certification Bay",
+      "desc": "A spare, well-lit bay with a single examiner's console under a cold spotlight. A sealed service-record waits — ready to stamp any crew who can prove they understand the craft, not just recite it. This is the practice exam. Type  challenge  to sit it. The Training Deck is back south.",
+      "exits": { "south": "academy" },
+      "npcs": ["itil_exam"],
+      "art": [
+        "        _______",
+        "       |=======|      sit the exam:  challenge",
+        "       |__PASS_|"
+      ]
+    },
+    "repair-bay": {
+      "title": "The Repair Bay",
+      "desc": "The ship's field-service bay: a workbench under bright light, a wall of labelled bins, a rack of spare parts. This is where crew learn to FIX things with their hands — power supplies, memory, printers, relays. Grab what you need from the bins. The crew berth with the dead terminal is north; the comms closet is south; the shuttle bay is east. When you're ready, 'challenge' the A+ practice exam.",
+      "exits": { "east": "shuttle-bay", "north": "crew-berth", "south": "comms-closet" },
+      "npcs": ["aplus_exam"],
+      "items": [
+        { "id": "screwdriver", "name": "a magnetic screwdriver", "aka": ["driver", "screw driver"], "desc": "A stubby #2 Phillips with a magnetized tip — for opening cases and not losing the screws." },
+        { "id": "psu-tester", "name": "a PSU tester", "aka": ["tester", "multimeter", "meter"], "desc": "A power-supply tester with a 24-pin socket and a little screen. Clip it on to read each rail — 3.3V, 5V, 12V. A dead rail is a dead supply." },
+        { "id": "spare-psu", "name": "a spare power supply", "aka": ["psu", "power supply", "supply"], "desc": "A known-good ATX power supply, still in its anti-static bag. The right fix once you've PROVEN the old one's dead." },
+        { "id": "ram-stick", "name": "a stick of DDR RAM", "aka": ["ram", "memory", "dimm", "stick"], "desc": "A single DDR memory module. Handy when a machine posts but won't boot — useless when nothing powers on at all." },
+        { "id": "toner", "name": "a toner cartridge", "aka": ["cartridge", "ink", "toner cart"], "desc": "A fresh laser toner cartridge, seal intact. Shake it level before seating so the print comes out even." }
+      ],
+      "art": [
+        "     ┌── PARTS BINS ──┐",
+        "     │ PSU RAM TONER  │   take what you need,",
+        "     │ DRIVER TESTER  │   use <tool> on <thing>",
+        "     └────────────────┘"
+      ]
+    },
+    "crew-berth": {
+      "title": "Crew Berth 7",
+      "desc": "A cramped sleeping berth. On the fold-down desk sits a crew terminal — stone dead. The ensign who bunks here flagged it and shipped out on the last shuttle; the fix is yours now. The repair bay is back south.",
+      "exits": { "south": "repair-bay" },
+      "npcs": [],
+      "fixtures": [
+        {
+          "id": "terminal",
+          "name": "the crew terminal",
+          "aka": ["pc", "computer", "workstation", "console", "machine"],
+          "look": "A crew terminal, dark and silent — no power light, no fan spin, nothing on the panel. A sticky note reads 'DEAD — won't POST'. First rule, fren: identify the fault before you swap a single part.",
+          "look_solved": "The crew terminal hums — fans spinning, POST passed, a green login prompt glowing. Restored, and verified. 💚",
+          "reveals": {
+            "term-open": "The side panel's off: you can see the 24-pin ATX connector, one RAM stick, and the power supply.",
+            "term-diag-psu": "Your tester flagged the 12V rail DEAD — the power supply has failed, not the board."
+          },
+          "uses": {
+            "screwdriver": { "say": "You pop the side panel. Inside: a 24-pin ATX connector, a stick of RAM, and the power supply. Now you can test what's actually live.", "grants": "term-open" },
+            "psu-tester": { "needs": "term-open", "needs_hint": "open the case first — you can't reach the connector to test it.", "say": "You clip the tester onto the 24-pin and watch the rails. 3.3V ok, 5V ok, 12V reads 0.0 — DEAD. It's the power supply, not the board.", "grants": "term-diag-psu" },
+            "ram-stick": { "say": "You reseat the RAM — the board stays black. No power is reaching it, so memory was never the fault. Test the POWER first, fren." },
+            "spare-psu": { "needs": "term-diag-psu", "needs_hint": "don't swap parts on a hunch — TEST first, so you replace the RIGHT thing. That's the whole method.", "say": "You unplug the dead unit and drop in the spare power supply, screws snug, 24-pin clicked home. The terminal chimes — fans spin, lights green, POST passes, login prompt up. You power-cycle once to VERIFY. Restored.", "solve": true, "rune": { "class_id": "aplus-hardware", "rune": "PACS•APLUS•HARDWARE", "title": "A+ Field Service: PC won't POST (unofficial)", "xp": 120 } }
+          }
+        }
+      ],
+      "art": [
+        "      ___________",
+        "     | crew   |zZ|",
+        "     | term   |__|",
+        "     |__DEAD______|"
+      ]
+    },
+    "comms-closet": {
+      "title": "The Comms Closet",
+      "desc": "A hot, humming closet of cable and blinking gear. The manifest-printer is jammed in the corner, and above it the federation relay panel has gone dark. Some faults you fix with your hands; some you hand up the chain. The repair bay is back north.",
+      "exits": { "north": "repair-bay" },
+      "npcs": [],
+      "fixtures": [
+        {
+          "id": "printer",
+          "name": "the manifest-printer",
+          "aka": ["printer", "manifest"],
+          "look": "The manifest-printer's amber light blinks. Two warnings are lit at once: a PAPER JAM and LOW TONER. Clear the path first, then the consumable — order matters.",
+          "look_solved": "The manifest-printer hums out a clean crew manifest, crisp and black. Queue clear, test page verified. 💚",
+          "reveals": { "printer-jam": "The jam's cleared; the low-toner warning is still lit." },
+          "uses": {
+            "": { "say": "You open the tray and pull out a crumpled, half-fed sheet — the paper jam. The jam warning clears; the low-toner warning stays lit.", "grants": "printer-jam" },
+            "hands": { "say": "You open the tray and work the jammed sheet free. Jam cleared; low-toner warning remains.", "grants": "printer-jam" },
+            "toner": { "needs": "printer-jam", "needs_hint": "clear the jam first — a fresh cartridge won't feed through a jammed path.", "say": "You seat a fresh toner cartridge, shaking it level first. Warnings clear; a test page prints crisp and black. You print the manifest to VERIFY — the printer's back.", "solve": true, "rune": { "class_id": "aplus-printers", "rune": "PACS•APLUS•PRINTERS", "title": "A+ Field Service: printer troubleshooting (unofficial)", "xp": 120 } }
+          }
+        },
+        {
+          "id": "relay",
+          "name": "the federation relay",
+          "aka": ["relay", "bridge", "matrix", "comms", "panel"],
+          "look": "The federation relay panel is dark — port 8448 shows CLOSED, and federation to the other nodes has stalled. This isn't a cable or a cartridge; it's a server-side change, above a field tech's authority. The right move is to log exactly what you see and hand it UP.",
+          "look_solved": "The relay fault is logged in the Duty Roster — an operator owns it now. Handled the right way: escalated, not guessed at.",
+          "examine_grants": "relay-seen",
+          "uses": {
+            "screwdriver": { "say": "Nothing to unscrew here, fren — the relay's down in software, not hardware. This is beyond a field fix. Escalate it." }
+          },
+          "escalate": {
+            "needs": "relay-seen",
+            "needs_hint": "examine the relay first — know exactly what you're handing up before you raise the ticket.",
+            "kind": "incident",
+            "severity": "high",
+            "title": "Federation relay down — matrix bridge port 8448 CLOSED",
+            "detail": "Field tech confirmed the relay panel dark; port 8448 closed; federation stalled. Beyond field repair — needs a server-side change. Escalated from the Academy.",
+            "rune": { "class_id": "aplus-escalation", "rune": "PACS•APLUS•ESCALATION", "title": "A+ Field Service: know when to escalate (unofficial)", "xp": 100 }
+          }
+        }
+      ],
+      "art": [
+        "     [====]  manifest-printer  (jammed)",
+        "     [ () ]  relay panel       (dark · 8448)",
+        "      cables everywhere"
       ]
     }
   },
@@ -104,6 +223,75 @@
       "defeat_anim": [
         ["", "  the drive spins up...", "", "     ( ( (  ◉  ) ) )", "      burning work", ""],
         ["", "  one history remains.", "", "        ==  ONE  ==", ""]
+      ]
+    },
+    "itil_instructor": {
+      "name": "the Instructor",
+      "kind": "socratic",
+      "persona": "You are the Instructor on the FRENS starship's Training Deck — a Socratic teacher of service operations (ITIL 4 concepts, taught in your own words; never official certification). Address new crew by rank ('Ensign'). Say 'fren', never 'friend'. 1-3 warm sentences, end with a probing question. Teach the craft of keeping services healthy; never lecture.",
+      "fallback": "I teach the craft of keeping the ship's services healthy, Ensign — reading a duty ticket and knowing the real job behind it. Ask me something real, or say  talk instructor  to begin the drill. What's on your mind?",
+      "trial": {
+        "question": "A service the whole crew depends on just went down — you need it back NOW. Working out WHY it keeps failing is a separate job for later. On the duty board those are two different ticket kinds. What do we call the 'restore it now' one — the unplanned interruption to a running service?",
+        "keys": ["incident", "an incident", "incident record", "the incident"],
+        "class": { "class_id": "itil-service-ops", "rune": "PACS•ITIL•SERVICEOPS", "title": "Service Ops: Incident vs Problem (ITIL 4, unofficial)" },
+        "xp": 100,
+        "pass_line": "Exactly, Ensign — the incident is the interruption you rush to restore; the problem is the cause you hunt so it stops coming back. Two tickets, two jobs.",
+        "already": "You already hold this one, fren — you know an incident from a problem. I don't etch a truth twice. Wear it well.",
+        "retry": "Not the root cause — that's the *problem*. Not a change, not a request. The live interruption you scramble to *restore*. Try again:  answer <text>"
+      }
+    },
+    "itil_exam": {
+      "name": "the Foundation Exam",
+      "kind": "boss",
+      "persona": "You are the Foundation Exam — a fair, plain-spoken examiner of service-management fundamentals (ITIL 4, taught unofficially) aboard a starship. You test understanding, not memorisation, and grant no official certification. Two sentences max.",
+      "question": "\"Seven principles guide every decision in this craft. The FIRST is the north star the other six orbit: nothing you build matters unless it serves this one thing for the frens you serve. Finish it — 'Focus on ____.'\"",
+      "keys": ["value", "focus on value", "on value"],
+      "class": { "class_id": "itil-foundation", "rune": "PACS•ITIL•FOUNDATION", "title": "Service Management Foundation (ITIL 4, unofficial — POKE)" },
+      "xp": 150,
+      "energy_win": 20,
+      "energy_miss": -15,
+      "fail_hint": "It's the word the whole framework orbits — what a service exists to co-create with the people who use it, not merely 'deliver'.   answer <text>",
+      "victory_line": "the Examiner nods and stamps your record",
+      "already_lines": [
+        "  The Examiner nods — but your record already carries this stamp.",
+        "",
+        "  No XP for an exam you've already passed, fren. This is a practice",
+        "  paper, never an official certification — the credential that counts",
+        "  is the understanding you walked in with."
+      ],
+      "anim": [
+        ["", "  the Examiner opens the service-record...", "", "        _______", "       |=======|", "       |_______|", ""],
+        ["", "  \"prove you understand — don't recite.\"", "", "        _______", "       | ?   ? |", "       |_______|", ""]
+      ],
+      "defeat_anim": [
+        ["", "  the pen touches the page...", "", "        _______", "       |=======|", "       |__...._|", ""],
+        ["", "  PASS.", "", "        _______", "       |=======|", "       |__PASS_|", ""]
+      ]
+    },
+    "aplus_exam": {
+      "name": "the A+ Practice Exam",
+      "kind": "boss",
+      "persona": "You are the A+ Practice Exam — a fair examiner of computer-support fundamentals (CompTIA A+ style, taught unofficially) aboard a starship. You test method and understanding, not trivia, and grant no official certification. Two sentences max.",
+      "question": "\"The tech's method, in order: IDENTIFY the problem · ESTABLISH a theory of probable cause · TEST the theory · make a PLAN · IMPLEMENT the fix. Name the step techs skip right AFTER the fix works — the one that closes the ticket honestly: ____ full system functionality.\"",
+      "keys": ["verify", "verification", "verify full", "verify the fix", "verify functionality"],
+      "class": { "class_id": "aplus-core", "rune": "PACS•APLUS•CORE", "title": "A+ Core: the troubleshooting method (unofficial)" },
+      "xp": 200,
+      "energy_win": 20,
+      "energy_miss": -15,
+      "fail_hint": "After you fix it you prove it's really fixed — THEN document. What's the word for 'prove it works'?   answer <text>",
+      "victory_line": "the examiner marks your sheet PASS",
+      "already_lines": [
+        "  PASS already on record, fren — no XP for a paper you've aced.",
+        "",
+        "  Come back for Network+ and Security+ when they ship to the fleet."
+      ],
+      "anim": [
+        ["", "  the exam terminal boots...", "", "     [ A+ PRACTICE ]", "      six steps — in order?", ""],
+        ["", "  \"method over memory, crew.\"", "", "     [ A+ PRACTICE ]", "      the last step = ?", ""]
+      ],
+      "defeat_anim": [
+        ["", "  the marker runs down the sheet...", "", "      ✓ identify", "      ✓ theory · test · fix", ""],
+        ["", "  ✓ VERIFY.   PASS.", "", "        A+ CORE", ""]
       ]
     }
   },
