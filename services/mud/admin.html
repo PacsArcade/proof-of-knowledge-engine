@@ -210,6 +210,73 @@ button{font-family:var(--pa-font-pixel)}
   .ticker{padding:7px 14px}
   .col{padding:12px 14px 20px}
 }
+/* ===================== FLEET OPS (docs/FLEET-OPS.md) ===================== */
+.fleet .fleet-grid{display:grid;grid-template-columns:1fr 320px;gap:12px;padding:12px}
+@media (max-width:900px){ .fleet .fleet-grid{grid-template-columns:1fr} }
+.fleet-h{font-family:var(--pa-font-pixel);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--pa-cyan);margin:2px 0 6px}
+.fleet-col{min-width:0}
+.fleet-side .fleet-h{margin-top:12px}
+.fleet-side .fleet-h:first-child{margin-top:0}
+
+.ticket{display:flex;align-items:flex-start;gap:8px;padding:8px;border:2px solid var(--pa-edge);border-left-width:4px;margin-bottom:6px;background:rgba(255,255,255,.02)}
+.ticket .tk-main{flex:1;min-width:0}
+.ticket .tk-code{font-family:var(--pa-font-mono);font-size:11px;color:var(--pa-fg-dim)}
+.ticket .tk-title{font-size:13px;color:var(--pa-fg);margin-top:2px;word-break:break-word}
+.ticket .tk-meta{font-size:10px;color:var(--pa-fg-dim);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap}
+.ticket[data-sev="critical"]{border-left-color:var(--pa-ghost)}
+.ticket[data-sev="high"]{border-left-color:var(--pa-coin)}
+.ticket[data-sev="normal"]{border-left-color:var(--pa-cyan)}
+.ticket[data-sev="low"]{border-left-color:var(--pa-edge)}
+.ticket[data-status="resolved"]{opacity:.55}
+.kchip{font-family:var(--pa-font-pixel);font-size:7px;padding:2px 5px;border:1px solid var(--pa-edge);color:var(--pa-fg-dim);text-transform:uppercase;letter-spacing:.04em}
+
+.rankbox,.lbbox,.budgetbox{border:2px solid var(--pa-edge);padding:8px}
+.rank-title{font-family:var(--pa-font-pixel);font-size:11px;color:var(--pa-coin);text-transform:uppercase}
+.bar-track{height:10px;border:1px solid var(--pa-edge);margin:6px 0;background:rgba(255,255,255,.03);overflow:hidden}
+.bar-fill{height:100%;background:var(--pa-cyan);width:0%;transition:width .5s ease}
+.bar-fill.coin{background:var(--pa-coin)}
+.board-ready{color:var(--pa-neon);font-family:var(--pa-font-pixel);font-size:9px;margin-top:4px}
+
+.lb-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;border-bottom:1px solid rgba(255,255,255,.05)}
+.lb-row .lb-rank{width:20px;color:var(--pa-fg-dim);font-family:var(--pa-font-mono);text-align:right}
+.lb-row .lb-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb-row .lb-pts{font-family:var(--pa-font-mono);color:var(--pa-coin)}
+.lb-row.me{background:rgba(0,255,255,.06)}
+.bot-tag{font-family:var(--pa-font-pixel);font-size:6px;color:var(--pa-pink);border:1px solid rgba(255,0,255,.35);padding:1px 3px}
+
+.audit-out{margin:0 12px 12px;border:2px solid var(--pa-edge);padding:10px;font-size:12px}
+.audit-out .av{font-family:var(--pa-font-pixel);font-size:10px}
+.audit-out .av.RED{color:var(--pa-ghost)} .audit-out .av.AMBER{color:var(--pa-coin)} .audit-out .av.GREEN{color:var(--pa-neon)}
+.finding{display:flex;gap:8px;padding:2px 0;font-size:11.5px}
+.finding .fl{width:52px;flex:none;font-family:var(--pa-font-pixel);font-size:7px}
+.finding .fl.red{color:var(--pa-ghost)} .finding .fl.amber{color:var(--pa-coin)} .finding .fl.green{color:var(--pa-neon)}
+
+.thchip{font-family:var(--pa-font-pixel);font-size:7px;padding:4px 6px;border:2px solid var(--pa-edge);color:var(--pa-fg-dim);cursor:pointer;text-transform:uppercase;letter-spacing:.03em;background:none}
+.thchip:hover{border-color:var(--pa-fg)}
+.thchip.on{color:var(--pa-void);background:var(--pa-cyan);border-color:var(--pa-cyan)}
+
+/* ---- LCARS theme: retheme by overriding tokens (the DESIGN-CONSOLE seam) ---- */
+html[data-theme="lcars"]{
+  --pa-void:#000; --pa-panel:#0a0a12; --pa-edge:#2b2b45;
+  --pa-fg:#ffd9a8; --pa-fg-dim:#c98f6a;
+  --pa-coin:#ffb01f;   /* LCARS amber (reward) */
+  --pa-neon:#66ccff;   /* LCARS blue (success)  */
+  --pa-cyan:#ff9966;   /* LCARS orange (interactive) */
+  --pa-pink:#cc6699;   /* LCARS mauve */
+  --pa-ghost:#ff5555;  /* alert red */
+}
+html[data-theme="lcars"] .fleet .ticket{border-radius:0 14px 14px 0}
+html[data-theme="lcars"] .rankbox,html[data-theme="lcars"] .lbbox,html[data-theme="lcars"] .budgetbox{border-radius:14px}
+html[data-theme="lcars"] .abtn,html[data-theme="lcars"] .thchip{border-radius:12px}
+
+/* ---- per-verse accent nudge (data-verse set from /fleet) ---- */
+html[data-verse="degen-wonderland"]{ --pa-coin:#c0f04a; --pa-cyan:#a06bff; }
+html[data-verse="frens-hub"]{ --pa-cyan:#5ad1ff; }
+
+@media (prefers-reduced-motion: reduce){
+  .pa-pulse{animation:none!important}
+  .bar-fill{transition:none}
+}
 </style>
 
 <div class="screen">
@@ -224,6 +291,9 @@ button{font-family:var(--pa-font-pixel)}
       <div class="grow"></div>
       <a class="abtn ghost" href="/play" target="_blank" rel="noopener" title="Open POKEMUD in a browser">&#9654; PLAY POKEMUD</a>
       <a class="abtn cyan hidden" id="local-site" target="_blank" rel="noopener" title="The physically-local arcade site">&#127968; ARCADE</a>
+      <span class="thchip on" data-theme="arcade" title="Arcade theme">ARCADE</span>
+      <span class="thchip" data-theme="lcars" title="LCARS theme — Starfleet bridge">LCARS</span>
+      <button class="thchip" id="snd-toggle" title="Console sound (WebAudio, synthesized — no assets)">SOUND</button>
       <span class="px" id="hdr-optag" style="font-size:9px;color:var(--pa-pink)" title="Operator identity">@pacsarcade-ops</span>
       <button class="abtn" id="signout">SIGN OUT</button>
     </div>
@@ -247,6 +317,7 @@ button{font-family:var(--pa-font-pixel)}
         <svg class="metric-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-label="Network"><circle cx="12" cy="5" r="2.3"/><circle cx="5" cy="19" r="2.3"/><circle cx="19" cy="19" r="2.3"/><path d="M12 7.3 6.2 16.8M12 7.3 17.8 16.8M7.3 19h9.4"/></svg>
         <span class="micro"><span class="micro-bars" id="tk-net-bars"></span><span class="micro-val" id="tk-net-val">&mdash;</span></span>
       </span>
+      <span class="px" id="tk-stardate" style="font-size:9px;color:var(--pa-cyan)" title="Stardate = Bitcoin block height">STARDATE &mdash;</span>
       <span class="px" style="font-size:7px;letter-spacing:.15em;color:var(--pa-fg-dim)">BLOCK</span>
       <span class="px" id="tk-block" style="font-size:10px;color:var(--pa-fg)" title="Bitcoin block height">&mdash;</span>
     </div>
@@ -361,6 +432,38 @@ button{font-family:var(--pa-font-pixel)}
 
     <!-- ===================== MAIN COLUMN ===================== -->
     <main class="col">
+
+      <!-- ===================== FLEET OPS ===================== -->
+      <section class="frame fleet" id="fleet-panel">
+        <div class="frame-head ruled" style="flex-wrap:wrap;gap:8px">
+          <button class="sec-toggle" data-target="fleet-body"><span class="sec-tw">&#9662;</span><span class="sec-title" style="color:var(--pa-coin)">&#128640; FLEET OPS</span></button>
+          <span class="chip" id="fleet-verse" title="This node's verse">&mdash;</span>
+          <span class="chip c-cyan" id="fleet-stardate" title="Stardate = Bitcoin block height">STARDATE &mdash;</span>
+          <div class="grow"></div>
+          <span class="chip c-ghost" id="fleet-open">0 OPEN</span>
+          <span class="chip" id="fleet-claimed">0 CLAIMED</span>
+          <span class="chip c-neon" id="fleet-resolved">&#10003; 0 DONE</span>
+          <button class="abtn cyan" id="fleet-audit" title="Chief Engineer: recompute node health and open tickets (don't trust, verify)">&#128295; RUN AUDIT</button>
+          <button class="abtn" id="fleet-raise" title="Raise a mission by hand">&#43; MISSION</button>
+        </div>
+        <div id="fleet-body">
+          <div class="fleet-grid">
+            <div class="fleet-col fleet-roster">
+              <div class="fleet-h">DUTY ROSTER <span class="dim" style="font-size:9px">&mdash; away missions (proof of work)</span></div>
+              <div id="fleet-tickets"><div class="body dim" style="padding:10px">standing by&hellip;</div></div>
+            </div>
+            <div class="fleet-col fleet-side">
+              <div class="fleet-h">YOUR RANK TRACK</div>
+              <div id="fleet-rank" class="rankbox"><div class="body dim" style="padding:6px">&mdash;</div></div>
+              <div class="fleet-h">COMMENDATIONS</div>
+              <div id="fleet-lb" class="lbbox"><div class="body dim" style="padding:6px">&mdash;</div></div>
+              <div class="fleet-h">FUN BUDGET <span class="dim" style="font-size:9px">&mdash; the non-profit funds the fun</span></div>
+              <div id="fleet-budget" class="budgetbox"><div class="body dim" style="padding:6px">&mdash;</div></div>
+            </div>
+          </div>
+          <div id="fleet-audit-out" class="audit-out hidden"></div>
+        </div>
+      </section>
 
       <!-- KNOWLEDGE QA banner -->
       <section class="frame">
@@ -1126,7 +1229,7 @@ button{font-family:var(--pa-font-pixel)}
     if(inFlight) return;
     inFlight = true;
     try{
-      const [stats, hist, nodes, relays, torrent, sitelink, modules, block, exts, games] = await Promise.all([
+      const [stats, hist, nodes, relays, torrent, sitelink, modules, block, exts, games, fleet] = await Promise.all([
         apiGet("/stats"),
         softGet("/system/history?window=60"),
         softGet("/nodes"),
@@ -1137,6 +1240,7 @@ button{font-family:var(--pa-font-pixel)}
         softGet("/block"),
         softGet("/extensions"),
         softGet("/games"),
+        softGet("/fleet"),
       ]);
 
       // fetch chat history for watched players (small set)
@@ -1162,6 +1266,7 @@ button{font-family:var(--pa-font-pixel)}
       renderModules(modules);
       renderExtensions(exts);
       renderGames(games);
+      renderFleet(fleet);
       renderChatToggle(stats);
       renderWatch(stats);
       renderBackroom();
@@ -1408,9 +1513,218 @@ button{font-family:var(--pa-font-pixel)}
     if(c && c.local_site){ const a = $("local-site"); a.href = c.local_site; a.classList.remove("hidden"); }
   }).catch(function(){});
 
+  /* ===================== FLEET OPS (docs/FLEET-OPS.md) ===================== */
+  // Officer identity for missions = the operator's ops tag.
+  function fleetOfficer(){ return (typeof opTag === "string" && opTag) ? opTag : "operator"; }
+  function flEsc(s){ return String(s==null?"":s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+  // Whitelist a level/verdict before it enters a class attribute — only letters/hyphen survive,
+  // case preserved so .av.RED and .fl.red both still match their CSS (F5).
+  function flCls(s){ return String(s==null?"":s).replace(/[^A-Za-z-]/g,""); }
+  function flNum(n){ try{ return (n||0).toLocaleString(); }catch(e){ return String(n||0); } }
+  function flSet(id,t){ const e=$(id); if(e) e.textContent=t; }
+  const KIND_LABEL = { incident:"INC", problem:"PRB", change:"CHG", request:"REQ", anomaly:"ANM", tribunal:"TRB", "peer-review":"REV" };
+  let lastFleet = null;
+
+  function renderFleet(f){
+    if(!f) return;
+    lastFleet = f;
+    // Stardate = raw block height; the BFT label is the Bitcoin Federated Time date (docs/BFT.md).
+    // flSet uses textContent, so these server strings can't inject markup (keeps the F5 invariant).
+    const sd = (f.stardate!=null ? f.stardate.toLocaleString() : "—");
+    const bftLbl = f.stardate_bft ? ("  ·  " + f.stardate_bft) : "";
+    flSet("tk-stardate", "STARDATE " + sd + bftLbl);
+    flSet("fleet-stardate", "STARDATE " + sd + bftLbl);
+    flSet("fleet-verse", f.verse_name || f.verse || "—");
+    if(f.verse) document.documentElement.setAttribute("data-verse", f.verse);
+    const c = f.counts || {};
+    flSet("fleet-open", (c.open||0) + " OPEN");
+    flSet("fleet-claimed", (c.claimed||0) + " CLAIMED");
+    flSet("fleet-resolved", "✓ " + (c.resolved||0) + " DONE");
+    renderTickets(f.tickets || []);
+    renderRank(f);
+    renderLeaderboard(f.leaderboard || []);
+    renderBudget(f.budget || {});
+    const ab = $("fleet-audit");
+    if(ab) ab.title = f.engineer_enabled
+      ? "Chief Engineer online — run an audit now (don't trust, verify)"
+      : "Runs the audit as operator. Enable poke-engineer in Extensions to let the bot run it on a schedule.";
+  }
+
+  function renderTickets(tickets){
+    const host = $("fleet-tickets"); if(!host) return;
+    if(!tickets.length){ host.innerHTML = '<div class="body dim" style="padding:10px">No missions on the board — the fleet is caught up. 🖖</div>'; return; }
+    host.innerHTML = tickets.map(t => {
+      const sev = t.severity||"normal", st = t.status||"open";
+      let action = "";
+      if(st==="open") action = '<button class="abtn cyan tk-act" data-id="'+t.id+'" data-act="claim">CLAIM</button>';
+      else if(st==="claimed") action = '<button class="abtn neon tk-act" data-id="'+t.id+'" data-act="resolve">RESOLVE</button>';
+      else action = '<button class="abtn tk-act" data-id="'+t.id+'" data-act="vouch" title="Endorse this resolved mission — a peer + a senior convene a review board">VOUCH</button>';
+      const who = t.claimed_by ? flEsc(t.claimed_by) : "";
+      const disp = (st==="resolved" && t.disposition) ? " · " + flEsc(t.disposition) : "";
+      return '<div class="ticket" data-sev="'+sev+'" data-status="'+st+'">'
+        + '<div class="tk-main">'
+        + '<div><span class="kchip">'+(KIND_LABEL[t.kind]||flEsc(t.kind))+'</span> <span class="tk-code">'+flEsc(t.code||("#"+t.id))+'</span></div>'
+        + '<div class="tk-title">'+flEsc(t.title||"")+'</div>'
+        + '<div class="tk-meta"><span>'+String(sev).toUpperCase()+'</span><span>src: '+flEsc(t.source||"")+'</span>'
+        + (who ? '<span>'+who+disp+'</span>' : '') + '</div>'
+        + '</div><div>'+action+'</div></div>';
+    }).join("");
+  }
+
+  function renderRank(f){
+    const host=$("fleet-rank"); if(!host) return;
+    const me = fleetOfficer();
+    const st = (f.officers||[]).find(o => o.name===me);
+    if(!st){ host.innerHTML = '<div class="body dim" style="padding:6px">Enlist by claiming a mission as <span class="mono" style="color:var(--pa-cyan)">'+flEsc(me)+'</span>.</div>'; return; }
+    const pct = st.next_threshold ? Math.min(100, Math.round(100*st.points/st.next_threshold)) : 100;
+    const nextTxt = st.next_rank ? (st.points+"/"+st.next_threshold+" → "+flEsc(st.next_rank)) : "max rank reached";
+    const vneed = f.promotion_vouches||2;
+    const boardTxt = st.board_ready ? '<div class="board-ready">★ REVIEW BOARD READY</div>'
+      : (st.next_rank ? '<div class="dim" style="font-size:10px">vouches '+st.vouches+'/'+vneed+' · '+st.to_next+' pts to go</div>' : '');
+    host.innerHTML = '<div class="rank-title">'+flEsc(st.rank)+'</div>'
+      + '<div class="dim" style="font-size:10px">'+flEsc(me)+'</div>'
+      + '<div class="bar-track"><div class="bar-fill coin" style="width:'+pct+'%"></div></div>'
+      + '<div class="dim" style="font-size:10px">'+nextTxt+'</div>' + boardTxt;
+  }
+
+  function renderLeaderboard(board){
+    const host=$("fleet-lb"); if(!host) return;
+    if(!board.length){ host.innerHTML = '<div class="body dim" style="padding:6px">No commendations yet — do the work, earn the ribbon.</div>'; return; }
+    const me = fleetOfficer();
+    host.innerHTML = board.map((r,i) => '<div class="lb-row '+(r.name===me?'me':'')+'">'
+      + '<span class="lb-rank">'+(i+1)+'</span>'
+      + '<span class="lb-name" title="'+flEsc(r.name)+'">'+flEsc(r.name)+' '+(r.is_bot?'<span class="bot-tag">BOT</span>':'')+'</span>'
+      + '<span class="lb-pts">'+r.points+'</span></div>').join("");
+  }
+
+  function renderBudget(b){
+    const host=$("fleet-budget"); if(!host) return;
+    const alloc=b.allocated_sats||0, spent=b.spent_sats||0, pct=Math.min(100, b.pct_spent||0);
+    host.innerHTML = '<div style="display:flex;justify-content:space-between;font-size:11px"><span class="dim">ALLOCATED</span><span class="mono" style="color:var(--pa-coin)">'+flNum(alloc)+' sats</span></div>'
+      + '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:10px" class="dim"><span>spent '+flNum(spent)+'</span><span>left '+flNum(b.remaining_sats||0)+'</span></div>'
+      + '<div style="display:flex;gap:6px;margin-top:6px;align-items:center"><button class="abtn" id="budget-edit" style="min-height:28px">SET BUDGET</button><span class="dim" style="font-size:9px">'+flEsc(b.network||"regtest")+'</span></div>';
+    const be=$("budget-edit"); if(be) be.onclick = onBudgetEdit;
+  }
+
+  async function fleetAct(id, act){
+    try{
+      if(act==="claim"){ await apiPost("/roster/"+id+"/claim", {officer:fleetOfficer()}); sfx.chirp(); flToast("Mission claimed — it's yours"); }
+      else if(act==="resolve"){
+        const note = prompt("Resolution / disposition:", "handled"); if(note===null) return;
+        await apiPost("/roster/"+id+"/resolve", {officer:fleetOfficer(), disposition:note}); sfx.reward(); flToast("Mission resolved — commendation earned");
+      } else if(act==="vouch"){
+        const r = await apiPost("/roster/"+id+"/vouch", {voter:fleetOfficer()});
+        const promo = r && r.result && r.result.promoted;
+        if(promo){ sfx.promote(); flToast("★ REVIEW BOARD → promoted to "+promo.rank); }
+        else { sfx.chirp(); flToast("Vouched — witnessed"); }
+      }
+      refresh();
+    }catch(e){ flToast((e && e.message) || "action failed", true); }
+  }
+
+  async function runAudit(){
+    const out=$("fleet-audit-out"); if(!out) return;
+    out.classList.remove("hidden");
+    out.innerHTML = '<div class="body dim">Chief Engineer auditing — recomputing from raw signal…</div>';
+    try{
+      const r = await apiPost("/engineer/audit", {});
+      const a = r.result || {};
+      sfx.chirp();
+      const findings = (a.findings||[]).map(f => '<div class="finding"><span class="fl '+flCls(f.level)+'">'+String(f.level||'').toUpperCase()+'</span><span>'+flEsc(f.msg)+'</span></div>').join("");
+      const recs = (a.recommendations||[]).map(x => '<li>'+flEsc(x)+'</li>').join("");
+      // F5: escape/whitelist every server value before it enters innerHTML — keeps the invariant
+      // that no server string reaches the DOM as markup, even server-computed ones.
+      const verdict = flEsc(a.verdict);
+      const sd = (a.stardate!=null ? flEsc(a.stardate) : '—');
+      out.innerHTML = '<div class="av '+flCls(a.verdict)+'">CHIEF ENGINEER — '+verdict+'</div>'
+        + '<div class="dim" style="font-size:10px;margin:2px 0 8px">don\'t trust, verify · stardate '+sd+' · '+((a.opened||[]).length)+' ticket(s) opened</div>'
+        + findings
+        + (recs ? '<div class="fleet-h" style="margin-top:8px">RECOMMENDATIONS</div><ul style="margin:4px 0 0 16px;padding:0;font-size:11.5px">'+recs+'</ul>' : '');
+      if(a.verdict==="RED") sfx.alert();
+      refresh();
+    }catch(e){ out.innerHTML = '<div class="av RED">audit failed: '+flEsc((e&&e.message)||"")+'</div>'; }
+  }
+
+  async function raiseMission(){
+    const title = prompt("New mission — title:"); if(!title) return;
+    const kind = (prompt("Kind (incident/problem/change/request/anomaly/tribunal/peer-review):","request")||"request").trim();
+    try{ await apiPost("/roster", {title:title, kind:kind, severity:"normal"}); sfx.chirp(); refresh(); }
+    catch(e){ flToast((e&&e.message)||"failed", true); }
+  }
+
+  async function onBudgetEdit(){
+    const b = (lastFleet && lastFleet.budget) || {};
+    const a = prompt("Fun budget — allocated sats:", b.allocated_sats||0); if(a===null) return;
+    const s = prompt("Spent sats:", b.spent_sats||0); if(s===null) return;
+    try{ await apiPost("/budget", {allocated_sats:Number(a)||0, spent_sats:Number(s)||0}); sfx.chirp(); refresh(); }
+    catch(e){ flToast((e&&e.message)||"failed", true); }
+  }
+
+  /* toast (self-contained, theme-aware) */
+  let _flTT=null;
+  function flToast(msg, bad){
+    let el=$("fl-toast");
+    if(!el){ el=document.createElement("div"); el.id="fl-toast";
+      el.style.cssText="position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:9999;padding:10px 16px;border:2px solid var(--pa-cyan);background:var(--pa-panel);color:var(--pa-fg);font-size:12px;max-width:80vw;box-shadow:0 4px 20px rgba(0,0,0,.5);transition:opacity .3s";
+      document.body.appendChild(el); }
+    el.style.borderColor = bad ? "var(--pa-ghost)" : "var(--pa-cyan)";
+    el.textContent = msg; el.style.opacity="1";
+    if(_flTT) clearTimeout(_flTT);
+    _flTT = setTimeout(function(){ el.style.opacity="0"; }, 2600);
+  }
+
+  /* WebAudio SFX — synthesized LCARS chirps, no assets. Off until the operator opts in. */
+  const sfx = (function(){
+    let ctx=null, on = localStorage.getItem("poke_sound")==="1";
+    function ac(){ if(!on) return null; if(!ctx){ try{ ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ return null; } } if(ctx.state==="suspended"){ ctx.resume(); } return ctx; }
+    function blip(freq,t0,dur,type,vol){ const c=ac(); if(!c) return; const o=c.createOscillator(), g=c.createGain(); o.type=type||"sine"; o.frequency.value=freq; const s=c.currentTime+(t0||0); g.gain.setValueAtTime(0.0001,s); g.gain.exponentialRampToValueAtTime(vol||0.06,s+0.012); g.gain.exponentialRampToValueAtTime(0.0001,s+(dur||0.12)); o.connect(g); g.connect(c.destination); o.start(s); o.stop(s+(dur||0.12)+0.03); }
+    const api = {
+      isOn(){ return on; },
+      set(v){ on=v; localStorage.setItem("poke_sound", v?"1":"0"); if(v){ ac(); api.chirp(); } },
+      chirp(){ blip(660,0,0.08,"square",0.05); blip(990,0.06,0.10,"square",0.04); },
+      reward(){ blip(523,0,0.10,"triangle",0.06); blip(659,0.08,0.10,"triangle",0.06); blip(784,0.16,0.14,"triangle",0.06); },
+      promote(){ [523,659,784,1047].forEach((f,i)=>blip(f,i*0.09,0.12,"triangle",0.06)); },
+      alert(){ blip(300,0,0.18,"sawtooth",0.06); blip(300,0.24,0.18,"sawtooth",0.06); }
+    };
+    return api;
+  })();
+
+  /* swappable dashboard themes — retheme by overriding tokens (never markup) */
+  function setTheme(name, silent){
+    if(name==="arcade") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", name);
+    localStorage.setItem("poke_theme", name);
+    const chips = document.querySelectorAll(".thchip[data-theme]");
+    chips.forEach(ch => ch.classList.toggle("on", ch.getAttribute("data-theme")===name));
+    if(!silent) sfx.chirp();
+  }
+
+  function wireFleet(){
+    const panel=$("fleet-panel");
+    if(panel && !panel._wired){
+      panel._wired = true;
+      panel.addEventListener("click", function(e){
+        const b = e.target.closest(".tk-act");
+        if(b){ fleetAct(b.getAttribute("data-id"), b.getAttribute("data-act")); }
+      });
+      const au=$("fleet-audit"); if(au) au.onclick = runAudit;
+      const ra=$("fleet-raise"); if(ra) ra.onclick = raiseMission;
+    }
+    document.querySelectorAll(".thchip[data-theme]").forEach(ch => ch.onclick = function(){ setTheme(ch.getAttribute("data-theme")); });
+    const snd=$("snd-toggle");
+    if(snd){
+      const paint = () => { snd.classList.toggle("on", sfx.isOn()); snd.textContent = sfx.isOn() ? "🔊 SOUND" : "🔇 SOUND"; };
+      snd.onclick = function(){ sfx.set(!sfx.isOn()); paint(); };
+      paint();
+    }
+    setTheme(localStorage.getItem("poke_theme")||"arcade", true);
+  }
+
   /* ---------------- boot ---------------- */
   wireToggles();
   wire();
+  wireFleet();
   renderBackroom();
   renderOperator();
   token = localStorage.getItem(TOKEN_KEY);
