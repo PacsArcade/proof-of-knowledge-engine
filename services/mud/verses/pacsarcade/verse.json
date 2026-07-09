@@ -18,7 +18,7 @@
     "entrance": {
       "title": "The Arcade Entrance",
       "desc": "CRT cabinets hum in the dark, throwing blue light across the carpet. A neon sign buzzes: PAC'S ARCADE — KNOWLEDGE IS THE HIGH SCORE. A worn token-slot glows, waiting. A stairwell descends into a cold blue glow.",
-      "exits": { "north": "alcove", "east": "vault", "down": "dungeon" },
+      "exits": { "north": "alcove", "east": "vault", "west": "academy", "down": "dungeon" },
       "npcs": [],
       "art": [
         "  ┌──┐  ┌──┐  ┌──┐     ~ insert token ~",
@@ -58,6 +58,29 @@
         "     .------------.",
         "     | [#]     ()  |   a sealed chest, banded in gold",
         "     '------------'"
+      ]
+    },
+    "academy": {
+      "title": "The Service Academy",
+      "desc": "A quiet room off the arcade floor: worn manuals on the shelves, a whiteboard still warm from the last class. This is where frens learn to run the node itself — to read a Duty Roster ticket and know which job it really is. The Instructor waits by the board. Say  talk instructor  to begin the trial. The Examination Hall is north; the entrance is back east.",
+      "exits": { "east": "entrance", "north": "exam_hall" },
+      "npcs": ["itil_instructor"],
+      "art": [
+        "     ┌───────────────┐",
+        "     │ INC PRB CHG   │   the board asks:",
+        "     │ REQ ANM  ?    │   which ticket is which?",
+        "     └───────────────┘"
+      ]
+    },
+    "exam_hall": {
+      "title": "The Examination Hall",
+      "desc": "Rows of empty seats face a single lectern under a cold spotlight. A sealed record-book waits on the stand — ready to stamp anyone who can prove they understand the craft, not just recite it. This is the practice exam. Type  challenge  to sit it. The Academy is back south.",
+      "exits": { "south": "academy" },
+      "npcs": ["itil_exam"],
+      "art": [
+        "        _______",
+        "       |=======|      sit the exam:  challenge",
+        "       |__PASS_|"
       ]
     }
   },
@@ -105,6 +128,49 @@
         ["", "  the forks collapse toward one...", "", "        .-~~~-.", "      (  x   x  )", "       \\   _   /", "        '-...-'", ""],
         ["", "  ...one chain...", "", "         .-~-.", "       (  -   -  )", "        \\  _  /", "         '-.-'", ""],
         ["", "  the Wraith unravels.", "", "           \\  |  /", "         ==  ONE  ==", "           /  |  \\", "", ""]
+      ]
+    },
+    "itil_instructor": {
+      "name": "the Instructor",
+      "kind": "socratic",
+      "persona": "You are the Instructor at Pac's Arcade Service Academy — a Socratic teacher of service-management basics (ITIL 4 concepts, taught in your own words, never official certification). Say 'fren', never 'friend'. Reply in 1-3 warm sentences and end with a probing question. Teach the craft of running a node; never lecture, never dump definitions.",
+      "fallback": "I teach the craft of keeping a node healthy, fren — reading a ticket and knowing the real job behind it. Ask me something real, or say  talk instructor  to begin the trial. What's on your mind?",
+      "trial": {
+        "question": "The game server just crashed and frens are locked out — you need it back NOW. Working out WHY it keeps crashing is a separate job for later. On the Duty Roster those are two different ticket kinds. What do we call the 'restore it now' one — the unplanned interruption to a running service?",
+        "keys": ["incident", "an incident", "incident record", "the incident"],
+        "class": { "class_id": "itil-service-ops", "rune": "PACS•ITIL•SERVICEOPS", "title": "Service Ops: Incident vs Problem (ITIL 4, unofficial)" },
+        "xp": 100,
+        "pass_line": "Exactly, fren — the incident is the interruption you rush to restore; the problem is the cause you hunt so it stops coming back. Two tickets, two jobs.",
+        "already": "You already hold this one, fren — you know an incident from a problem. I don't etch a truth twice. Wear it well.",
+        "retry": "Not the root cause — that's the *problem*. Not a change, not a request. The live interruption you scramble to *restore*. Try again:  answer <text>"
+      }
+    },
+    "itil_exam": {
+      "name": "the Foundation Exam",
+      "kind": "boss",
+      "persona": "You are the Foundation Exam — a fair, plain-spoken examiner of service-management fundamentals (ITIL 4, taught unofficially) in a MUD. You test understanding, not memorisation, and you grant no official certification. Two sentences max.",
+      "question": "\"Seven principles guide every decision in this craft. The FIRST is the north star the other six orbit: nothing you build matters unless it serves this one thing for the frens you serve. Finish it — 'Focus on ____.'\"",
+      "keys": ["value", "focus on value", "on value"],
+      "class": { "class_id": "itil-foundation", "rune": "PACS•ITIL•FOUNDATION", "title": "Service Management Foundation (ITIL 4, unofficial — POKE)" },
+      "xp": 150,
+      "energy_win": 20,
+      "energy_miss": -15,
+      "fail_hint": "It's the word the whole framework orbits — what a service exists to co-create with the people who use it, not merely 'deliver'.   answer <text>",
+      "victory_line": "the Examiner nods and stamps your record",
+      "already_lines": [
+        "  The Examiner nods — but your record already carries this stamp.",
+        "",
+        "  No XP for an exam you've already passed, fren. This is a practice",
+        "  paper, never an official certification — the credential that counts",
+        "  is the understanding you walked in with."
+      ],
+      "anim": [
+        ["", "  the Examiner opens the record-book...", "", "        _______", "       |=======|", "       |_______|", ""],
+        ["", "  \"prove you understand — don't recite.\"", "", "        _______", "       | ?   ? |", "       |_______|", ""]
+      ],
+      "defeat_anim": [
+        ["", "  the pen touches the page...", "", "        _______", "       |=======|", "       |__...._|", ""],
+        ["", "  PASS.", "", "        _______", "       |=======|", "       |__PASS_|", ""]
       ]
     }
   },

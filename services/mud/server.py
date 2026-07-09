@@ -74,6 +74,12 @@ import verses        # noqa: E402  (data-driven verse packs — rooms, NPCs, str
 VERSE = verses.load()
 ROOMS = VERSE["rooms"]
 NPCS = VERSE["npcs"]
+# Field-service items: every portable object declared across the verse's rooms,
+# indexed by id so inventory (which stores ids) can render names + descriptions.
+ITEM_INDEX: dict = {}
+for _room in ROOMS.values():
+    for _item in _room.get("items", []):
+        ITEM_INDEX[_item["id"]] = _item
 GALLERY = VERSE.get("gallery", [])
 VSTR = VERSE["strings"]
 if not (os.environ.get("PA_SPACE") or os.environ.get("PA_NODE_NAME")):
@@ -412,6 +418,12 @@ def help_lines(p: "Player", page: int = 1) -> list[str]:
         f"   challenge            {boss}",
         "   pull lever           use a feature in the room",
         "",
+        "  ▸ FIELD SERVICE  (hands-on repair — earn A+ runes)",
+        "   examine <thing>      inspect equipment or an item",
+        "   take <item>          pick up a tool or part",
+        "   use <tool> on <it>   diagnose / repair a fault",
+        "   escalate <thing>     hand a fault up to the Duty Roster",
+        "",
         "  ▸ YOU",
         "   stats                your level · xp · energy",
         "   profile              your identity card",
@@ -565,6 +577,13 @@ def focus_room(p: Player) -> None:
         first = NPCS[room["npcs"][0]]
         hint = "(type 'challenge')" if first["kind"] == "boss" else f"(try 'talk {room['npcs'][0]}')"
         lines.append("Here: " + ", ".join(NPCS[n]["name"] for n in room["npcs"]) + "   " + hint)
+    items_here = [it for it in room.get("items", []) if it["id"] not in p.inventory]
+    if items_here:
+        lines.append("You see: " + ", ".join(it["name"] for it in items_here) + "   (take <item>)")
+    fixtures = room.get("fixtures", [])
+    if fixtures:
+        lines.append("Equipment: " + ", ".join(fx["name"] for fx in fixtures)
+                     + "   (examine <it> · use <tool> on <it>)")
     others = [pl.name for w, pl in PLAYERS.items() if pl.room == p.room and pl is not p]
     if others:
         lines.append("Also here: " + ", ".join(others))
@@ -754,6 +773,7 @@ RESERVED_NAMES = {"help", "quit", "exit", "q", "look", "l", "admin", "boss",
                   "say", "go", "north", "south", "east", "west", "up", "down", "n", "s", "e", "w",
                   "talk", "answer", "ask", "challenge", "fight", "stats", "profile", "certs", "runes",
                   "inventory", "inv", "i", "backup", "link", "verify", "who", "pull", "examine",
+                  "take", "get", "grab", "pick", "drop", "use", "apply", "install", "swap", "escalate",
                   "home", "rename", "invite", "visit", "gallery", "view", "enter",
                   "chat", "fren", "next", "more", "load", "run"} | set(NPCS)
 
@@ -3037,7 +3057,15 @@ async def dispatch(p: Player, line: str) -> bool:
     elif verb in ("stats", "attributes", "attr", "level"):
         await show_attributes(p)
     elif verb in ("examine", "inspect", "x"):
-        await examine(p, rest)
+        await examine_thing(p, rest)
+    elif verb in ("take", "get", "grab", "pick"):
+        await take_item(p, rest[3:].strip() if verb == "pick" and rest.lower().startswith("up ") else rest)
+    elif verb == "drop":
+        await drop_item(p, rest)
+    elif verb in ("use", "apply", "install", "swap"):
+        await use_item(p, rest)
+    elif verb in ("escalate", "escalation"):
+        await escalate_cmd(p, rest)
     elif verb in ("profile", "whoami", "me"):
         await show_profile(p)
     elif verb == "admin":
@@ -3073,8 +3101,9 @@ async def dispatch(p: Player, line: str) -> bool:
     elif verb in ("certs", "runes", "certificates"):
         await show_certs(p)
     elif verb in ("inventory", "inv", "i"):
+        names = [ITEM_INDEX.get(it, {}).get("name", it) for it in p.inventory]
         focus_text(p, "Inventory", ["", "  You carry:", ""] +
-                   (["   · " + it for it in p.inventory] if p.inventory else ["   nothing but curiosity"]), GREEN)
+                   (["   · " + n for n in names] if names else ["   nothing but curiosity"]), GREEN)
     elif verb == "who":
         push(p, c(GREEN, f"online ({len(PLAYERS)}): ") + ", ".join((f"@{pl.fren_tag}" if pl.fren_tag else pl.name) for pl in PLAYERS.values()))
     elif verb == "home":
@@ -3148,6 +3177,183 @@ async def pull(p: Player, thing: str) -> None:
         focus_room(p)
     else:
         push(p, c(GREY, "there's nothing like that to pull here"))
+
+
+# ---------------------------------------------------------------------------
+# Field-service layer: portable items + fixed "fixtures" you troubleshoot.
+# Scenarios are DATA (verse.json), not code — a room may declare `items` (things
+# you `take`) and `fixtures` (things you `examine` and `use <tool> on`). Each
+# fixture's `uses` map is keyed by an item id and drives a tiny per-player state
+# machine; progress flags live in the per-player feature store. Same "data, not
+# code" rail the NPC trials ride, extended to hands-on repair + escalation.
+# ---------------------------------------------------------------------------
+def _scn(name: str) -> str:
+    return "scn:" + name
+
+
+async def _flag(p: Player, key: str, val: "bool | None" = None) -> bool:
+    """Get (val=None) or set a persisted per-player scenario flag."""
+    if val is None:
+        return bool(await asyncio.to_thread(STORE.get_feature, _scn(p.name), key, False))
+    await asyncio.to_thread(STORE.set_feature, _scn(p.name), key, val)
+    return val
+
+
+def _match_item(arg: str, ids) -> "str | None":
+    """Match a typed word to an item id: exact id first, then name/aka substring
+    (both directions). Exact id only — never id-as-substring — so 'psu' doesn't
+    ambiguously hit both 'psu-tester' and 'spare-psu'."""
+    arg = (arg or "").lower().strip()
+    if not arg:
+        return None
+    ids = list(ids)
+    for iid in ids:
+        if arg == iid.lower():
+            return iid
+    for iid in ids:
+        it = ITEM_INDEX.get(iid, {})
+        hay = [str(it.get("name", "")).lower()] + [a.lower() for a in it.get("aka", [])]
+        if any(h and (arg in h or h in arg) for h in hay):
+            return iid
+    return None
+
+
+def _find_fixture(room: dict, arg: str) -> "dict | None":
+    arg = (arg or "").lower().strip()
+    fixtures = room.get("fixtures", [])
+    if not arg:
+        return fixtures[0] if len(fixtures) == 1 else None
+    for fx in fixtures:
+        hay = [fx["id"].lower(), str(fx.get("name", "")).lower()] + [a.lower() for a in fx.get("aka", [])]
+        if any(h and (arg in h or h in arg) for h in hay):
+            return fx
+    return None
+
+
+async def take_item(p: Player, arg: str) -> None:
+    room = get_room(p.room)
+    arg_l = (arg or "").lower().strip()
+    it = None
+    for cand in room.get("items", []):
+        hay = [cand["id"].lower(), cand["name"].lower()] + [a.lower() for a in cand.get("aka", [])]
+        if arg_l and any(arg_l in h for h in hay):
+            it = cand
+            break
+    if not it:
+        push(p, c(GREY, "there's nothing like that here to take")); return
+    if it["id"] in p.inventory:
+        push(p, c(GREY, "you already have " + it["name"])); return
+    if not it.get("portable", True):
+        push(p, c(GREY, it.get("fixed_msg", it["name"] + " won't come with you"))); return
+    p.inventory.append(it["id"])
+    await asyncio.to_thread(STORE.save_player, p.name, p.room, p.inventory)
+    push(p, c(GOLD, "you take " + it["name"] + "."))
+    focus_room(p)
+
+
+async def drop_item(p: Player, arg: str) -> None:
+    iid = _match_item(arg, p.inventory)
+    if not iid:
+        push(p, c(GREY, "you're not carrying that")); return
+    p.inventory.remove(iid)
+    await asyncio.to_thread(STORE.save_player, p.name, p.room, p.inventory)
+    push(p, c(GREY, "you set down " + ITEM_INDEX.get(iid, {}).get("name", iid) + "."))
+    focus_room(p)
+
+
+async def examine_thing(p: Player, arg: str) -> None:
+    """Examine a fixture / item / carried item; fall back to examining a fren."""
+    room = get_room(p.room)
+    fx = _find_fixture(room, arg)
+    if fx and arg.strip():
+        lines = _wrap(fx.get("look", fx["name"]), BOARD_W - 4)
+        if await _flag(p, "solved:" + fx["id"]):
+            lines += ["", fx.get("look_solved", "It's working now. 💚")]
+        else:
+            for key, label in fx.get("reveals", {}).items():
+                if await _flag(p, key):
+                    lines += ["", label]
+            if fx.get("uses") or fx.get("escalate"):
+                lines += ["", "(try:  use <tool> on " + fx["id"]
+                          + ("  ·  escalate " + fx["id"] if fx.get("escalate") else "") + ")"]
+        focus_text(p, fx["name"], lines, GREEN, art=fx.get("art"))
+        if fx.get("examine_grants"):
+            await _flag(p, fx["examine_grants"], True)
+        return
+    iid = _match_item(arg, p.inventory) or _match_item(arg, [it["id"] for it in room.get("items", [])])
+    if iid and iid in ITEM_INDEX:
+        it = ITEM_INDEX[iid]
+        focus_text(p, it["name"], _wrap(it.get("desc", it["name"]), BOARD_W - 4), GREEN, art=it.get("art"))
+        return
+    await examine(p, arg)          # not a thing — maybe it's a fren
+
+
+async def _do_escalate(p: Player, fx: dict, esc: dict) -> None:
+    tk = await asyncio.to_thread(
+        STORE.raise_ticket, esc.get("kind", "incident"),
+        esc.get("title", f"Academy: {display_name(p)} escalated {fx['name']}"),
+        esc.get("detail", ""), "academy", esc.get("severity", "normal"),
+        f"academy:{fx['id']}:{p.name}", _verse_id())
+    push(p, c(GOLD, f"↑ escalated to the Duty Roster as {tk.get('code', 'a ticket')} — good call, fren."))
+    event("academy", f"{display_name(p)} escalated {fx['id']} → roster {tk.get('code', '?')}")
+
+
+async def use_item(p: Player, rest: str) -> None:
+    rest = (rest or "").strip()
+    room = get_room(p.room)
+    if " on " in rest.lower():
+        i = rest.lower().index(" on ")
+        toolarg, fxarg = rest[:i].strip(), rest[i + 4:].strip()
+    else:
+        toolarg, fxarg = "", rest
+    fx = _find_fixture(room, fxarg)
+    if not fx:
+        push(p, c(GREY, "use what on what?  try  use <tool> on <thing>  (examine the equipment first)")); return
+    if await _flag(p, "solved:" + fx["id"]):
+        push(p, c(GREY, fx.get("solved_msg", fx["name"] + " is already sorted, fren."))); return
+    uses = fx.get("uses", {})
+    if toolarg:
+        tid = _match_item(toolarg, p.inventory)
+        if not tid:
+            other = _match_item(toolarg, list(ITEM_INDEX.keys()))
+            push(p, c(GREY, "you're not carrying " + (ITEM_INDEX[other]["name"] if other else "that"))); return
+        rule = uses.get(tid)
+        usedname = ITEM_INDEX.get(tid, {}).get("name", tid)
+    else:
+        rule = uses.get("") or uses.get("hands")
+        usedname = "your hands"
+    if not rule:
+        push(p, c(GREY, f"you try {usedname} on {fx['name']} — nothing useful happens.")); return
+    need = rule.get("needs")
+    if need and not await _flag(p, need):
+        push(p, c(GREY, rule.get("needs_hint", "not yet — diagnose the fault before you touch that."))); return
+    push(p, c(CYAN, rule.get("say", f"you use {usedname} on {fx['name']}.")))
+    if rule.get("grants"):
+        await _flag(p, rule["grants"], True)
+    if rule.get("solve"):
+        await _flag(p, "solved:" + fx["id"], True)
+        if rule.get("rune"):
+            await etch_class_rune(p, rule["rune"], xp=int(rule["rune"].get("xp", 100)))
+        if rule.get("escalate"):
+            await _do_escalate(p, fx, rule["escalate"])
+    focus_room(p)
+
+
+async def escalate_cmd(p: Player, arg: str) -> None:
+    room = get_room(p.room)
+    fx = _find_fixture(room, arg) or next((f for f in room.get("fixtures", []) if f.get("escalate")), None)
+    if not fx or not fx.get("escalate"):
+        push(p, c(GREY, "nothing here needs escalating — field-fix what you can first, fren.")); return
+    if await _flag(p, "solved:" + fx["id"]):
+        push(p, c(GREY, f"{fx['name']} is already handled.")); return
+    esc = fx["escalate"]
+    if esc.get("needs") and not await _flag(p, esc["needs"]):
+        push(p, c(GREY, esc.get("needs_hint", "diagnose it first — know what you're handing up."))); return
+    await _flag(p, "solved:" + fx["id"], True)
+    if esc.get("rune"):
+        await etch_class_rune(p, esc["rune"], xp=int(esc["rune"].get("xp", 100)))
+    await _do_escalate(p, fx, esc)
+    focus_room(p)
 
 
 # --- the Observatory: extra-credit hidden room (calendars + zodiac) -----------
