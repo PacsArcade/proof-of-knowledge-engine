@@ -143,6 +143,7 @@ gets logged) but **cannot vote on review boards** — promotion stays human.
 | **Security** | `pacbot` | proof-of-humanity / anti-bot; verify a fren is real | seam only (owned by other agent) |
 | **Chief Engineer** | `poke-engineer` | node-health audits, trend/anomaly flags, infra recommendations | `/health` `/stats` `/system/history` `/nodes` `/events` |
 | **Ship's Counsel (JAG)** | `poke-counsel` | compliance & rights advisor; reviews what we ship for legal footing | Tribunal pillar; read-only + advisory |
+| **Librarian** | `poke-librarian` | correlates a ticket with KB docs + past fixes to speed the resolution and feed the training loop | `/roster` · `docs/` · DB-1 corpus seam (`PA_CORPUS_URL`) |
 
 - **pacBOT (Security) seam:** `verify_human(player, signal) -> {verdict, confidence}` + a roster
   hook (a suspicious-activity signal can raise a ticket). **Implement nothing here** — the other

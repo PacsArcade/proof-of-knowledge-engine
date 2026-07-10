@@ -74,14 +74,16 @@ Base URL = `http://<host>:4001`. Shapes below are the **real** payloads (trimmed
 | `/ranks`, `/leaderboard`, `/budget` | rank track, commendations, **Fun Budget** | ranks/standings; leaderboard `[{name,points,awards,is_bot}]`; budget `{allocated_sats,spent_sats,remaining_sats,pct_spent,network}` |
 | `/nodes` | **FLEET MAP** | `{online, reason?}` (federation/corpus mesh) |
 | `/health`, `/system` | health rollup | node vitals |
-| `/extensions` | **BOT DECK** | `{extensions:{<id>:{enabled,desc}}}` — e.g. `pacbot`, `poke-engineer`, `poke-counsel` |
+| `/extensions` | **BOT DECK** | `{extensions:{<id>:{enabled,desc}}}` — e.g. `pacbot`, `poke-engineer`, `poke-counsel`, `poke-librarian` |
 | `/modules` | course catalog | `{modules:[{lvl,code,name,path,prereq,rune,access}]}` |
 | `/relays`, `/torrent`, `/sitelink`, `/games`, `/block`, `/bans`, `/players/<name>/history` | mesh/site/games/stardate/moderation | see `admin.html` renderers |
 
 ### 3b. Actions (POST, JSON body, same header)
 
 - **Duty Roster:** `/roster` (raise) · `/roster/<id>/claim` `{officer}` · `/roster/<id>/resolve`
-  `{officer,disposition}` · `/roster/<id>/vouch` `{voter}` (human-only) · `/commend`
+  `{officer,disposition}` · `/roster/<id>/vouch` `{voter}` (human-only) · `/roster/<id>/note`
+  `{by,note}` (attach an actionable note → the ticket timeline) · `/roster/<id>/correlate`
+  (**Librarian** → related KB docs + past fixes) · `/commend`
   `{recipient,points,reason}` · `/budget` `{allocated_sats,spent_sats}` · `/engineer/audit` (run the
   Chief Engineer now → `{verdict:GREEN|AMBER|RED, findings[], recommendations[], opened[]}`).
 - **Ingest:** `/knowledge/flag` `{topic,quote,by}` → raises a peer-review ticket. **Courses escalate
@@ -101,7 +103,7 @@ Base URL = `http://<host>:4001`. Shapes below are the **real** payloads (trimmed
 ## 4. Domain model — Duty Roster / Fleet Ops
 
 - **Tickets are ITIL objects.** `kind ∈ {incident, problem, change, request, anomaly, tribunal,
-  peer-review}`; codes `INC-0001`, `CHG-0002`, … ; `status ∈ {open, claimed, resolved}`. Ingest
+  peer-review, spark}` (**spark** = a half-baked idea to capture and track, code `SPK-…`); codes `INC-0001`, `CHG-0002`, … ; `status ∈ {open, claimed, resolved}`. Ingest
   adapters raise them: knowledge-flag → peer-review, Chief Engineer audit → incident/anomaly,
   **Academy escalations → incident/request** (`source:"academy"`).
 - **Two currencies:** **runes** (what you *learned* — soulbound certs) vs **commendations** (service
