@@ -40,11 +40,30 @@ wall-clock dates before genesis — block heights are never negative, so on-chai
 - `"short"` (default): **`AB 16 · M05 · D23`**
 - `"long"`: `AB 16 · M05 · D23  (block 858,000 · diff-epoch 425)`
 - `"stardate"`: `STARDATE 858,000`
+- `"date"`: **`a₿ 0016.05.23`** — the ₿-marked bitcoin date (Pac, 2026-07-10). The **₿** marks it
+  unmistakably as a *bitcoin* date; the year is zero-padded to 4 digits. Separators are a style
+  choice (`a₿ 0016.05.23` or `a₿ 0016/05/23`); the module ships dots. Pre-genesis wall-clock dates
+  use `before_bitcoin(year, month, day, second=None)` → **`b₿ yyyy.dd.mm[.ss]`** (day-first, seconds
+  as needed) — for the *Before Bitcoin* / negative-time side only, since heights are never negative.
 
 `bft_from_height(height)` returns the full decomposition (year, month 1–13, day 1–28,
 day_of_year 1–364, beat 0–143 within the day, difficulty epoch, week-of-month, fortnight-of-month).
 `bft_year_progress(height)` gives `blocks_to_next_month` / `blocks_to_next_year` — the cadence
 hooks for the monthly awards ceremony and the morning briefing.
+
+## The moon & the lunar year
+
+The 28-day month lets the **moon** ride the calendar for free: **one full lunation per BFT month.**
+`moon_phase(height)` is a pure function of the day-of-month — **D01 = 🌑 new**, **~D15 = 🌕 full**,
+back to new by **D28** — returning `{index 0–7, emoji, name, illumination}`. It is a *block-timed*
+moon: it drifts from the ~29.53-day astronomical moon on purpose, exactly as the 364-day year drifts
+from the sun. The chain is still the clock.
+
+Because every month begins on **D01 (a new moon)**, **every BFT new year (M01·D01) is a new-moon
+new year** — the Asian-calendar shape falls out of the block math with nothing bolted on. Each year
+carries one of **12 animal signs**: `year_animal(height)` returns the sign, with **AB 0 (Gregorian
+2009) = 🐂 Ox** (so AB 11 = 🐀 Rat, and the cycle repeats every 12 years). Signs are lore-flavor,
+not finance — same house rule as the Observatory's zodiac (`calendar_lore.py`): stars are for wonder.
 
 ## Naming is deliberately NOT baked in
 

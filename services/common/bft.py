@@ -102,12 +102,17 @@ def format_bft(height: Optional[int], month_names: Optional[list[str]] = None,
                style: str = "short") -> str:
     """Render a BFT date. `month_names` (13 entries) supplies blessed month lore when it exists;
     otherwise months render as "M01".."M13". `style`: "short" → 'AB 16 · M05 · D23';
-    "long" → adds the block and the difficulty epoch; "stardate" → just 'STARDATE <height>'."""
+    "long" → adds the block and the difficulty epoch; "stardate" → just 'STARDATE <height>';
+    "date" → the ₿-marked bitcoin date 'a₿ 0016.05.23' (After Bitcoin, 4-digit year). See
+    `before_bitcoin(...)` for the pre-genesis 'b₿ yyyy.dd.mm[.ss]' wall-clock form."""
     d = bft_from_height(height)
     if not d.get("known"):
         return "STARDATE —" if style == "stardate" else "BFT —"
     if style == "stardate":
         return f"STARDATE {d['height']:,}"
+    if style == "date":
+        # ₿ marks it as a bitcoin date so it's unmistakable; year zero-padded to 4 (Pac, 2026-07-10)
+        return f"a₿ {d['year']:04d}.{d['month']:02d}.{d['day']:02d}"
 
     mi = d["month_index"]
     if month_names and len(month_names) >= MONTHS_PER_YEAR and month_names[mi]:
@@ -138,14 +143,60 @@ def bft_year_progress(height: Optional[int]) -> dict[str, Any]:
     }
 
 
+# --- moon & the lunar year (Pac, 2026-07-10) --------------------------------------------------
+# One full moon cycle per 28-day BFT month: the phase is a pure function of the day-of-month, so
+# the moon is *block-timed* like everything else. It drifts from the ~29.53-day astronomical moon
+# on purpose — the same way BFT's 364-day year drifts from the sun. Because every month begins on
+# D01 (a new moon), every BFT new year (M01·D01) is itself a new-moon, Asian-style new year, and
+# each year carries one of 12 animal signs.
+
+_MOON_PHASES = [
+    ("🌑", "New"), ("🌒", "Waxing Crescent"), ("🌓", "First Quarter"), ("🌔", "Waxing Gibbous"),
+    ("🌕", "Full"), ("🌖", "Waning Gibbous"), ("🌗", "Last Quarter"), ("🌘", "Waning Crescent"),
+]
+_YEAR_ANIMALS = [
+    ("🐀", "Rat"), ("🐂", "Ox"), ("🐅", "Tiger"), ("🐇", "Rabbit"), ("🐉", "Dragon"), ("🐍", "Snake"),
+    ("🐎", "Horse"), ("🐐", "Goat"), ("🐒", "Monkey"), ("🐓", "Rooster"), ("🐕", "Dog"), ("🐖", "Pig"),
+]
+
+
+def moon_phase(height: Optional[int]) -> dict[str, Any]:
+    """The BFT moon — one synodic cycle per BFT month. Phase is a pure function of the day-of-month
+    (D01 = new, ~D15 = full, back to new by D28). Returns {index 0..7, emoji, name, illumination}."""
+    d = bft_from_height(height)
+    if not d.get("known"):
+        return {"known": False}
+    frac = (d["day"] - 1) / DAYS_PER_MONTH                 # 0..1 through the lunation
+    index = round(frac * 8) % 8
+    emoji, name = _MOON_PHASES[index]
+    return {"known": True, "index": index, "emoji": emoji, "name": name,
+            "illumination": round(1 - abs(1 - 2 * frac), 3), "day": d["day"]}
+
+
+def year_animal(height: Optional[int]) -> dict[str, Any]:
+    """The 12-animal sign for the BFT year (Asian-style). BFT year 0 (Gregorian 2009) = Ox."""
+    d = bft_from_height(height)
+    if not d.get("known"):
+        return {"known": False}
+    emoji, name = _YEAR_ANIMALS[(d["year"] + 1) % 12]      # +1 so AB 0 lands on Ox
+    return {"known": True, "year": d["year"], "emoji": emoji, "name": name}
+
+
+def before_bitcoin(year: int, month: int, day: int, second: Optional[int] = None) -> str:
+    """Wall-clock label for a date *before* genesis: 'b₿ yyyy.dd.mm[.ss]' (seconds as needed).
+    On-chain heights are never negative, so this is only for pre-genesis / negative-time refs."""
+    base = f"b₿ {year:04d}.{day:02d}.{month:02d}"
+    return base if second is None else f"{base}.{second:02d}"
+
+
 if __name__ == "__main__":
     # Quick, dependency-free sanity demo: python services/common/bft.py
     samples = [0, 143, 144, 4032, 52416, 105000, 210000, 858000, 1050000]
     print(f"BFT · genesis={GENESIS_ISO} · {BLOCKS_PER_MONTH} blocks/month · {BLOCKS_PER_YEAR} blocks/year\n")
     for h in samples:
-        d = bft_from_height(h)
-        print(f"  height {h:>9,}  ->  {format_bft(h, style='long'):<44}"
-              f"  y{d['year']} m{d['month']} d{d['day']} beat {d['beat']}/144")
+        mp, ya = moon_phase(h), year_animal(h)
+        print(f"  height {h:>9,}  ->  {format_bft(h, style='date'):<16}  {format_bft(h, style='long'):<44}"
+              f"  {mp['emoji']} {mp['name']:<16} {ya['emoji']} {ya['name']}")
     print()
     # boundaries
     assert bft_from_height(0)["year"] == 0 and bft_from_height(0)["month"] == 1 and bft_from_height(0)["day"] == 1
@@ -153,4 +204,10 @@ if __name__ == "__main__":
     assert bft_from_height(BLOCKS_PER_YEAR)["year"] == 1 and bft_from_height(BLOCKS_PER_YEAR)["month"] == 1
     assert bft_from_height(BLOCKS_PER_YEAR - BLOCKS_PER_DAY)["day_of_year"] == 364
     assert bft_from_height(None)["known"] is False
+    # bitcoin-date / moon / lunar-year (2026-07-10)
+    assert format_bft(0, style="date") == "a₿ 0000.01.01"
+    assert format_bft(858000, style="date") == "a₿ 0016.05.23"       # matches docs "AB 16 · M05 · D23"
+    assert moon_phase(0)["name"] == "New" and moon_phase(0)["index"] == 0
+    assert year_animal(0)["name"] == "Ox" and year_animal(11 * BLOCKS_PER_YEAR)["name"] == "Rat"
+    assert before_bitcoin(2008, 10, 31) == "b₿ 2008.31.10"
     print("  self-check: OK")
