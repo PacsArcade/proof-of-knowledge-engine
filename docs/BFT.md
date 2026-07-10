@@ -61,9 +61,12 @@ from the sun. The chain is still the clock.
 
 Because every month begins on **D01 (a new moon)**, **every BFT new year (M01·D01) is a new-moon
 new year** — the Asian-calendar shape falls out of the block math with nothing bolted on. Each year
-carries one of **12 animal signs**: `year_animal(height)` returns the sign, with **AB 0 (Gregorian
-2009) = 🐂 Ox** (so AB 11 = 🐀 Rat, and the cycle repeats every 12 years). Signs are lore-flavor,
-not finance — same house rule as the Observatory's zodiac (`calendar_lore.py`): stars are for wonder.
+carries one of **13 animal signs** — the traditional twelve **plus the Cat as the 13th** (the famous
+"left-out" sign of the Great Race, and a real sign in the Vietnamese zodiac), blessed here as the
+**🐈 Astronomical Cat** to match the 13-month year and Ophiuchus (the 13th sign). `year_animal(height)`
+returns the sign, with **AB 0 (2009) = 🐂 Ox** (so AB 11 = 🐈 Astronomical Cat, then it wraps every 13
+years). Signs are lore-flavor, not finance — same house rule as the Observatory's zodiac
+(`calendar_lore.py`): stars are for wonder.
 
 ## Naming is deliberately NOT baked in
 

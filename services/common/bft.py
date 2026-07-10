@@ -154,9 +154,14 @@ _MOON_PHASES = [
     ("🌑", "New"), ("🌒", "Waxing Crescent"), ("🌓", "First Quarter"), ("🌔", "Waxing Gibbous"),
     ("🌕", "Full"), ("🌖", "Waning Gibbous"), ("🌗", "Last Quarter"), ("🌘", "Waning Crescent"),
 ]
+# 13 animals — the traditional 12 plus the CAT as the 13th (Pac, 2026-07-10). The cat is the famous
+# "left-out" sign of the Great Race (the rat tricked it) and a real sign in the Vietnamese zodiac; we
+# seat it 13th to match the 13-month year and Ophiuchus (the 13th sign). Blessed as the "Astronomical
+# Cat" (the flying cat of Adult Swim's Perfect Hair Forever) — a fitting crown for the 13th month.
 _YEAR_ANIMALS = [
     ("🐀", "Rat"), ("🐂", "Ox"), ("🐅", "Tiger"), ("🐇", "Rabbit"), ("🐉", "Dragon"), ("🐍", "Snake"),
     ("🐎", "Horse"), ("🐐", "Goat"), ("🐒", "Monkey"), ("🐓", "Rooster"), ("🐕", "Dog"), ("🐖", "Pig"),
+    ("🐈", "Astronomical Cat"),
 ]
 
 
@@ -174,11 +179,11 @@ def moon_phase(height: Optional[int]) -> dict[str, Any]:
 
 
 def year_animal(height: Optional[int]) -> dict[str, Any]:
-    """The 12-animal sign for the BFT year (Asian-style). BFT year 0 (Gregorian 2009) = Ox."""
+    """The 13-animal sign for the BFT year (Asian-style, + the Cat). BFT year 0 (2009) = Ox."""
     d = bft_from_height(height)
     if not d.get("known"):
         return {"known": False}
-    emoji, name = _YEAR_ANIMALS[(d["year"] + 1) % 12]      # +1 so AB 0 lands on Ox
+    emoji, name = _YEAR_ANIMALS[(d["year"] + 1) % 13]      # +1 so AB 0 lands on Ox; 13th = the Cat
     return {"known": True, "year": d["year"], "emoji": emoji, "name": name}
 
 
@@ -208,6 +213,7 @@ if __name__ == "__main__":
     assert format_bft(0, style="date") == "a₿ 0000.01.01"
     assert format_bft(858000, style="date") == "a₿ 0016.05.23"       # matches docs "AB 16 · M05 · D23"
     assert moon_phase(0)["name"] == "New" and moon_phase(0)["index"] == 0
-    assert year_animal(0)["name"] == "Ox" and year_animal(11 * BLOCKS_PER_YEAR)["name"] == "Rat"
+    assert year_animal(0)["name"] == "Ox" and year_animal(11 * BLOCKS_PER_YEAR)["name"] == "Astronomical Cat"
+    assert year_animal(12 * BLOCKS_PER_YEAR)["name"] == "Rat"   # cycle wraps after the 13th (Cat)
     assert before_bitcoin(2008, 10, 31) == "b₿ 2008.31.10"
     print("  self-check: OK")
