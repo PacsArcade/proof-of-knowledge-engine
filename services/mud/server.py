@@ -1775,6 +1775,25 @@ class _AdminHTTP(BaseHTTPRequestHandler):
                 self._reply(200, {"ok": True, "result": res})
             except (KeyError, ValueError) as e:
                 self._reply(409, {"error": str(e)})
+        elif path.startswith("/roster/") and path.endswith("/note"):   # attach an actionable note
+            actor = str(data.get("by") or data.get("actor") or "operator")
+            note = str(data.get("note") or "").strip()
+            if not note:
+                return self._reply(400, {"error": "need a note"})
+            try:
+                tid = int(path[len("/roster/"):-len("/note")])
+                t = STORE.add_note(tid, actor, note)
+                event("admin", f"{actor} noted {t.get('code')}")
+                self._reply(200, {"ok": True, "result": t})
+            except (KeyError, ValueError) as e:
+                self._reply(409, {"error": str(e)})
+        elif path.startswith("/roster/") and path.endswith("/correlate"):  # Librarian: KB + past fixes
+            actor = self.headers.get("X-POKE-Bot", "") or "operator"
+            try:
+                tid = int(path[len("/roster/"):-len("/correlate")])
+                self._reply(200, {"ok": True, "result": librarian_correlate(tid, actor=actor)})
+            except (KeyError, ValueError) as e:
+                self._reply(409, {"error": str(e)})
         elif path == "/commend":                        # owner grants a commendation directly
             rec = str(data.get("recipient") or data.get("player") or "").strip()
             if not rec:
@@ -2327,6 +2346,10 @@ _EXT_DEFAULTS = {
     "poke-counsel": {"enabled": False,
                      "desc": "Ship's Counsel — compliance & rights advisor (advisory only, not legal advice); "
                              "drafts memos to the Tribunal board. Seam only in v1 (docs/FLEET-OPS.md)"},
+    "poke-librarian": {"enabled": False,
+                       "desc": "Librarian — correlates a Duty Roster ticket with knowledge-base articles "
+                               "and past fixes to speed the resolution and feed the training loop. "
+                               "Read-only; suggests + notes, never mutates (docs/FLEET-OPS.md)"},
 }
 
 
@@ -2519,7 +2542,7 @@ def _find_player(name: str):
 
 # Officer bots identify via X-POKE-Bot; they can EARN commendations but never vote
 # on review boards — promotion stays human (docs/FLEET-OPS.md §7).
-FLEET_BOT_OFFICERS = {"poke-engineer", "pacbot", "poke-counsel"}
+FLEET_BOT_OFFICERS = {"poke-engineer", "pacbot", "poke-counsel", "poke-librarian"}
 FLEET_PROMOTION_VOUCHES = int(os.environ.get("PA_FLEET_VOUCHES", "2") or 2)
 FLEET_TICKET_KINDS = list(world_store._TICKET_PREFIX.keys())
 
@@ -2659,6 +2682,86 @@ def fleet_snapshot() -> dict:
         "engineer_enabled": extension_enabled("poke-engineer"),
         "promotion_vouches": FLEET_PROMOTION_VOUCHES,
     }
+
+
+# --- Librarian (poke-librarian): correlate a ticket with KB articles + past fixes ---
+# Given a Duty Roster ticket, find related knowledge-base docs and past resolutions so an
+# agent (or fren) can work the ticket faster — and every correlation logged on the ticket
+# feeds the training loop (ticket -> article -> eventual fix = a labelled example).
+_KB_STOP = {"the","and","for","with","that","this","when","are","was","from","its","not","but",
+            "you","your","every","each","only","still","just","which","who","into","out","via",
+            "has","have","will","would","should","can","not","null","true","false","http","https"}
+
+
+def _kb_keywords(text: str) -> set:
+    return {t for t in re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]{2,}", (text or "").lower())
+            if t not in _KB_STOP}
+
+
+def _kb_docs_index() -> list:
+    """A lightweight KB index over the repo's docs/ (title + body keywords).
+    The DB-1 corpus (semantic search) plugs in here when PA_CORPUS_URL is set."""
+    out = []
+    docs_dir = os.path.join(_HERE, "..", "..", "docs")
+    try:
+        names = sorted(fn for fn in os.listdir(docs_dir) if fn.endswith(".md"))
+    except OSError:
+        return out
+    for fn in names:
+        try:
+            with open(os.path.join(docs_dir, fn), encoding="utf-8") as f:
+                body = f.read()
+        except OSError:
+            continue
+        title = fn
+        for line in body.splitlines():
+            if line.startswith("# "):
+                title = line[2:].strip()
+                break
+        out.append({"title": title, "ref": "docs/" + fn, "source": "doc",
+                    "kw": _kb_keywords(title + " " + body[:6000])})
+    return out
+
+
+def librarian_correlate(ticket_id: int, actor: str = "poke-librarian", attach: bool = True) -> dict:
+    """Librarian officer: surface KB docs + past fixes related to a ticket. Heuristic keyword
+    overlap today (repo docs + resolved-ticket dispositions); the DB-1 corpus is the semantic
+    upgrade at PA_CORPUS_URL. Read-only except an optional note (the correlation, for the loop)."""
+    tk = STORE.get_ticket(ticket_id)
+    if not tk:
+        raise KeyError("no such ticket")
+    q = _kb_keywords(str(tk.get("title", "")) + " " + str(tk.get("detail", "")))
+    hits = []
+    for item in _kb_docs_index():
+        shared = q & item["kw"]
+        if len(shared) >= 2:
+            hits.append({"title": item["title"], "ref": item["ref"], "source": "doc",
+                         "score": len(shared), "why": "shares: " + ", ".join(sorted(shared)[:6])})
+    try:
+        for row in STORE.list_tickets(status="resolved", limit=200):
+            if row.get("id") == ticket_id or not row.get("disposition"):
+                continue
+            shared = q & _kb_keywords(str(row.get("title", "")) + " " + str(row.get("disposition", "")))
+            if len(shared) >= 2:
+                hits.append({"title": (row.get("code") or ("#" + str(row.get("id")))) + " " + str(row.get("title", "")),
+                             "ref": "roster:" + str(row.get("id")), "source": "resolution", "score": len(shared) + 1,
+                             "why": "past fix: " + str(row.get("disposition", ""))[:90]})
+    except Exception:
+        pass
+    hits.sort(key=lambda h: -h["score"])
+    top = hits[:5]
+    result = {"ticket": tk.get("code") or ticket_id, "count": len(top), "correlations": top,
+              "corpus": "configured" if os.environ.get("PA_CORPUS_URL")
+              else "offline — set PA_CORPUS_URL for semantic KB search"}
+    if attach and top:
+        summary = "librarian: %d related — %s" % (
+            len(top), "; ".join(h["title"] + " (" + h["ref"] + ")" for h in top[:3]))
+        try:
+            STORE.add_note(ticket_id, actor, summary)
+        except Exception:
+            pass
+    event("librarian", f"correlated {tk.get('code', ticket_id)} → {len(top)} KB hit(s)")
+    return result
 
 
 # --- Chief Engineer (poke-engineer): "don't trust, verify" ---------------------

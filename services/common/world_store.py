@@ -43,7 +43,7 @@ def mock_wallet_for(name: str) -> str:
 # Fleet Ops (docs/FLEET-OPS.md): ITIL-shaped ticket kinds → a human code prefix.
 _TICKET_PREFIX = {
     "incident": "INC", "problem": "PRB", "change": "CHG", "request": "REQ",
-    "anomaly": "ANM", "tribunal": "TRB", "peer-review": "REV",
+    "anomaly": "ANM", "tribunal": "TRB", "peer-review": "REV", "spark": "SPK",
 }
 
 
@@ -458,6 +458,18 @@ class SqliteWorldStore:
         self.db.commit()
         return self.get_ticket(ticket_id)
 
+    def add_note(self, ticket_id: int, actor: str, note: str) -> dict[str, Any]:
+        """Attach a free-text note to a ticket — a 'note' event on its timeline. Notes make a
+        ticket actionable: context, next steps, links, or a librarian's KB correlations."""
+        if not self.get_ticket(ticket_id):
+            raise KeyError("no such ticket")
+        self.db.execute(
+            "INSERT INTO ticket_events(ticket_id, actor, action, note) VALUES (?, ?, 'note', ?)",
+            (int(ticket_id), actor, note))
+        self.db.execute("UPDATE tickets SET updated_at = datetime('now') WHERE id = ?", (int(ticket_id),))
+        self.db.commit()
+        return self.get_ticket(ticket_id)
+
     # -- commendations (service done — the proof of work; distinct from soulbound runes) --
     def _award(self, recipient: str, points: int, reason: str, ticket_id: Optional[int] = None,
                verse: Optional[str] = None, awarded_by: str = "system") -> None:
@@ -655,6 +667,9 @@ class PostgresWorldStore:
 
     def resolve_ticket(self, ticket_id: int, officer: str, disposition: str = "") -> dict[str, Any]:
         raise NotImplementedError("PostgresWorldStore.resolve_ticket — UPDATE tickets + award commendation")
+
+    def add_note(self, ticket_id: int, actor: str, note: str) -> dict[str, Any]:
+        raise NotImplementedError("PostgresWorldStore.add_note — INSERT ticket_events(action='note')")
 
     def award_commendation(self, recipient: str, points: int, reason: str = "",
                            awarded_by: str = "owner", verse: Optional[str] = None) -> dict[str, Any]:
