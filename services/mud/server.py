@@ -199,6 +199,8 @@ MAG = "\x1b[38;5;201m"
 GREY = "\x1b[38;5;245m"
 RED = "\x1b[38;5;196m"
 GOLD = "\x1b[38;5;220m"
+VIOLET = "\x1b[38;5;93m"        # the Oracle / mystery — VIOLET PHOSPHOR's signature
+VIOLET_DIM = "\x1b[38;5;54m"    # CRT scanline underglow
 
 
 def c(color: str, s: str) -> str:
@@ -304,11 +306,14 @@ LOGO = [
     "█    █▄▄█ █ ▀▄ █▄▄▄ █   █ █▄▄█ █▄▄▀",
 ]
 
+# (label, status, status_color) — a tiny CRT boot check in the VIOLET PHOSPHOR palette.
+# The last line is the thesis: knowledge is the high score.
 BOOT_LINES = [
-    ("CRT POWER ...........", "OK"),
-    ("COIN MECH ...........", "OK"),
-    ("KNOWLEDGE CORE ......", "LOADED"),
-    ("ORACLE LINK .........", "VIOLET"),
+    ("CRT PHOSPHOR .........", "LIT",           VIOLET),
+    ("COIN MECH ............", "READY",         GREEN),
+    ("KNOWLEDGE CORE .......", "ONLINE",        CYAN),
+    ("ORACLE LINK ..........", "LISTENING",     VIOLET),
+    ("HIGH SCORE ...........", "UNDERSTANDING", GOLD),
 ]
 
 # A little Commodore-64 love: the cassette-era load ritual, played before the logo.
@@ -325,6 +330,7 @@ C64_LINES = [
 
 SUBTITLE = "Proof of Knowledge Engine - Multi User Dungeon"
 _COIN_ROW = "\x00coin\x00"                       # placeholder swapped for the blinking coin
+_SCAN_ROW = "\x01scan\x01"                       # placeholder swapped for a faint CRT scanline band
 
 
 def make_banner(accent: str = BOLD + GOLD, coin: str = "", coin_col: str = "") -> str:
@@ -332,7 +338,7 @@ def make_banner(accent: str = BOLD + GOLD, coin: str = "", coin_col: str = "") -
     `coin` renders centered on the INSERT COIN row inside the box."""
     verse_name = VERSE["name"].upper()
     lines = [
-        "",
+        _SCAN_ROW,
         verse_name,
         "presents",
         "",
@@ -340,11 +346,14 @@ def make_banner(accent: str = BOLD + GOLD, coin: str = "", coin_col: str = "") -
         SUBTITLE,
         "",
         _COIN_ROW,
-        "",
+        _SCAN_ROW,
     ]
-    width = max(dwidth(l) for l in lines if l != _COIN_ROW) + 8
+    width = max(dwidth(l) for l in lines if l not in (_COIN_ROW, _SCAN_ROW)) + 8
     out = [c(MAG, "╔" + "═" * width + "╗")]
     for ln in lines:
+        if ln == _SCAN_ROW:                          # faint CRT scanline band (phosphor underglow)
+            out.append(c(MAG, "║") + c(VIOLET_DIM, "░" * width) + c(MAG, "║"))
+            continue
         if ln == _COIN_ROW:
             txt, col = coin, (coin_col or BOLD + GOLD)
         elif ln in LOGO:
@@ -368,7 +377,7 @@ def banner_width() -> int:
 
 BANNER = make_banner()
 # Colors the title cycles through on login so PAC'S ARCADE / POKEMUD glimmers.
-SHIMMER = [BOLD + GOLD, BOLD + CYAN, BOLD + MAG, BOLD + AMBER, BOLD + GREEN, BOLD + GOLD]
+SHIMMER = [BOLD + MAG, BOLD + VIOLET, BOLD + CYAN, BOLD + VIOLET, BOLD + MAG, BOLD + GOLD]
 
 HELP_PAGES = 2
 
@@ -3538,10 +3547,10 @@ async def attract_intro(p: Player, reader: asyncio.StreamReader) -> "str | None"
         skipped = True
 
     await p.send(CLEAR + "\r\n\r\n")
-    for label, status in BOOT_LINES:                  # a tiny CRT boot check
+    for label, status, status_col in BOOT_LINES:      # a tiny CRT boot check
         if skipped:
             break
-        await p.send("   " + c(GREY, "▓ " + label + " ") + c(GREEN, status) + "\r\n")
+        await p.send("   " + c(GREY, "▓ " + label + " ") + c(status_col, status) + "\r\n")
         await pause(0.45)
     await pause(0.5)
     if not skipped:                                   # the C64 load ritual 💾
