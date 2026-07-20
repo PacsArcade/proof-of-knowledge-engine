@@ -31,6 +31,8 @@ Source (DB-1)** or a human operator has approved it.
 - Provide a fast "explain" that shows the operator the supporting DB-1 passages on approve.
 
 ## Rules
+- **DB-1 is the node's own verified ground truth — grounding *is* the citation.** Content that
+  can't be grounded is **unverified**: it never ships as fact, it goes to the operator.
 - No value-bearing content goes live having skipped the check.
 - Every quarantine is explainable (score + sources), never a silent drop.
 - The human operator, in their encrypted room, is the ultimate authority.
