@@ -94,3 +94,54 @@ mesh is never on a path a player waits on. Full rationale in `docs/LATENCY.md`.
 - `connectors/` — supplemental knowledge sources feeding DB-1.
 - `scripts/` — node-doctor, bootstrap, issue-cert.
 - `docs/` — this file, LATENCY, SECURITY, CONVENTIONS, ONBOARDING-WIZARD.
+
+## Knowledge channels — sealed stores announced over RSS, carried by the mesh (design, 0018.06.23 a₿)
+
+> Scope only — no build yet (Hold Deck H91). The full brief:
+> [`design-briefs/knowledge-channels-rss-torrent.md`](../../design-briefs/knowledge-channels-rss-torrent.md).
+> Reuses this doc's corpus mesh (signed manifests, verse subscriptions, one libtorrent session) as the
+> transport; adds the two stores, the daily seal, and the feed.
+
+```
+   ┌────────────────────────────── ONE SHIP (one operator's node) ──────────────────────────────┐
+   │                                                                                             │
+   │   AI writes all day                          a human reviews (lint + the Desk)             │
+   │   ┌────────────────────────┐   promote ▶    ┌────────────────────────┐                     │
+   │   │  LIVING store           │──────────────▶│  LOCKED store           │                     │
+   │   │  gbrain · Postgres+     │  (never auto) │  deck-kb · markdown ·   │                     │
+   │   │  pgvector · sources:    │               │  lint-gated · git       │                     │
+   │   │  wiki · fleet · client-*│               └───────────┬────────────┘                     │
+   │   └───────────┬────────────┘                           │                                  │
+   │        client-* excluded                                │                                  │
+   │               │        every BFT 00 (day count rises)   │                                  │
+   │               ▼                                          ▼                                  │
+   │   ┌──────────────────────────────── seal (cron, COLD) ──────────────────────────────┐      │
+   │   │ snapshot → sha256 → manifest {corpus_id, version=BFT day, block_height,         │      │
+   │   │ shards[], unsealed_by_review, signer_pubkey} → SIGN (ship key) → SEED (torrent)  │      │
+   │   │ any step fails → publish nothing, cron row ✗                                     │      │
+   │   └───────────────┬──────────────────────────────────────────────┬──────────────────┘      │
+   │                   │ magnet + signed manifest                     │ one <item> per seal      │
+   │                   ▼                                              ▼                          │
+   │   ┌──────────────────────┐                     ┌────────────────────────────────────────┐   │
+   │   │ corpus mesh  bt 6881 │                     │ the ship's RSS feeds (its CHANNELS)     │   │
+   │   │ DHT-first, trackers  │                     │ /.well-known/knowledge/locked.xml  ON   │   │
+   │   │ optional             │                     │ /.well-known/knowledge/living.xml  OFF  │   │
+   │   └──────────┬───────────┘                     │ <enclosure magnet> + inline manifest    │   │
+   │              │                                 │ + pa:block + pa:signer (nostr mirror ✓) │   │
+   └──────────────┼─────────────────────────────────┴───────────────────┬────────────────────┴───┘
+                  │ shards (verified per hash)                          │ subscribe = relays.json
+                  ▼                                                     ▼   {kind:"feed", pubkey}
+   ┌──────────────────────────────── ANOTHER SHIP ──────────────────────────────────────────────┐
+   │  serve: poll enabled feeds once a BFT day → new guid → verify manifest against the PINNED   │
+   │  key → join swarm → pull shards → verify hashes → ingest as a FEDERATED source in ITS      │
+   │  LIVING store ("frens-earth-locked") — never into its locked store. Bad key/sig → refuse.  │
+   │  Mute a channel like a relay (enabled:false). The node map shows last seal block + ✓/✗.    │
+   └─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+   Two stores · one seal a day · one item per seal · trust pinned per channel · human promotion only.
+```
+
+Lanes when ruled (brief §7): K-0 close the mesh's Ed25519 + libtorrent TODOs → K-1 `seal` →
+K-2 feed → K-3 subscribe → K-4 promote. Open for the Admiral (brief §8): the seal's signing key
+(REC: a ship key delegated by the g2x3 key), the living channel's default (REC off), retention
+(REC 7 seals), shard grain, the name ("knowledge channels").

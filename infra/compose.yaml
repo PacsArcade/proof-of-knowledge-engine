@@ -195,7 +195,9 @@ services:
     <<: *pa-service
     # Off-the-shelf engine image — pin to a digest for production. The Luanti/
     # Minetest project ships server builds; swap this for your chosen tag.
-    image: registry.gitlab.com/minetest/minetest:latest
+    # Official Luanti server image (the project moved from minetest/minetest to luanti-org/luanti).
+    # Ships NO game: mount Minetest Game or VoxeLibre into .minetest/games (see docs/LUANTI-JOINED-969188.md).
+    image: ghcr.io/luanti-org/luanti:5.17.0@sha256:05941f39414a0f97c72be736790f432c8426a0f2afe3104b72f88b2b44075b4f
     ports:
       - "30000:30000/udp"
     volumes:

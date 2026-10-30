@@ -1,0 +1,12 @@
+diff --git a/build_zstd.sh b/build_zstd.sh
+index 2a89096..bb0e956 100755
+--- a/build_zstd.sh
++++ b/build_zstd.sh
+@@ -15,6 +15,7 @@ export CFLAGS="$CFLAGS -D_POSIX_SOURCE=1"
+ export CXXFLAGS="$CXXFLAGS -D_POSIX_SOURCE=1"
+ emcmake cmake \
+   -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
++  -DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF \
+   "$SOURCES_DIR/zstd/build/cmake"
+ 
+ emmake make

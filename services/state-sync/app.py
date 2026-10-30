@@ -98,19 +98,47 @@ async def _apply_world_mutation(world: str, actor: str, object_id: str,
     it stays inside the HOT budget. NOTE: any COLD follow-up (Matrix, on-chain) must be enqueued
     for a background worker here, never awaited on this path.
     """
-    key = f"obj:{object_id}"
     action = _normalize(intent)
-    cur = await asyncio.to_thread(STORE.get_feature, world, key, {"state": False, "revision": 0})
-    state_on = bool(cur.get("state", False))
+    state_on, revision = await _read_object(world, object_id)
     if action == "toggle":
         state_on = not state_on
     elif action == "on":
         state_on = True
     elif action == "off":
         state_on = False
-    revision = int(cur.get("revision", 0)) + 1
-    await asyncio.to_thread(STORE.set_feature, world, key, {"state": state_on, "revision": revision})
+    revision += 1
+    await _write_object(world, object_id, state_on, revision)
     return WorldState(object_id=object_id, state={object_id: "on" if state_on else "off"}, revision=revision)
+
+
+# Shared objects the MUD already owns. The MUD keeps the vault lever as a bare boolean in the
+# store under (room="vault", key="lever"); a Luanti lever whose object_id is one of these aliases
+# reads and writes that SAME row, so `pull lever` in the vault and a right-click in Luanti are
+# one switch. The revision counter lives beside it as (room, key + ".rev"). Any other object_id
+# uses the generic obj:<id> record as before.
+SHARED_OBJECTS: dict[str, tuple[str, str]] = {
+    "vault_lever": ("vault", "lever"),
+    "lever": ("vault", "lever"),
+}
+
+
+async def _read_object(world: str, object_id: str) -> tuple[bool, int]:
+    if object_id in SHARED_OBJECTS:
+        room, key = SHARED_OBJECTS[object_id]
+        on = await asyncio.to_thread(STORE.get_feature, room, key, False)
+        rev = await asyncio.to_thread(STORE.get_feature, room, key + ".rev", 0)
+        return bool(on), int(rev)
+    cur = await asyncio.to_thread(STORE.get_feature, world, f"obj:{object_id}", {"state": False, "revision": 0})
+    return bool(cur.get("state", False)), int(cur.get("revision", 0))
+
+
+async def _write_object(world: str, object_id: str, on: bool, revision: int) -> None:
+    if object_id in SHARED_OBJECTS:
+        room, key = SHARED_OBJECTS[object_id]
+        await asyncio.to_thread(STORE.set_feature, room, key, bool(on))
+        await asyncio.to_thread(STORE.set_feature, room, key + ".rev", revision)
+        return
+    await asyncio.to_thread(STORE.set_feature, world, f"obj:{object_id}", {"state": on, "revision": revision})
 
 
 # --------------------------------------------------------------------------- #
@@ -133,6 +161,14 @@ async def command_mud(cmd: MudCommand) -> WorldState:
     object_id = cmd.target                     # placeholder resolution
     intent = cmd.verb
     return await _apply_world_mutation(cmd.world, cmd.actor, object_id, intent, {"args": cmd.args})
+
+
+@app.get("/state/{world}/{object_id}", response_model=WorldState)
+async def get_state(world: str, object_id: str) -> WorldState:
+    """Read one object's current state (no mutation). The Luanti mod polls this so a lever
+    pulled in the MUD swings in the voxel world."""
+    on, rev = await _read_object(world, object_id)
+    return WorldState(object_id=object_id, state={object_id: "on" if on else "off"}, revision=rev)
 
 
 @app.get("/healthz")

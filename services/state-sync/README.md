@@ -32,6 +32,7 @@ worker, never awaited here.
 |--------|------------------|---------|
 | `POST` | `/event/luanti`  | Translate a Luanti world event (e.g. a lever pulled) → a DB-2 write; return new state. |
 | `POST` | `/command/mud`   | Translate a MUD text command (e.g. `pull lever`) → a DB-2 write; return new state. |
+| `GET`  | `/state/{world}/{object_id}` | Read one object's state, no mutation (the Luanti mod polls this so MUD-side changes show in the voxel world). Object ids `vault_lever` / `lever` map onto the MUD's vault lever row. |
 | `GET`  | `/healthz`       | Liveness. |
 
 Both write endpoints converge on the **same** DB-2 mutation path, so the two front-ends stay
